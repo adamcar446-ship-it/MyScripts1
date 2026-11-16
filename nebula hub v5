@@ -1,0 +1,153 @@
+
+-- NEBULA HUB V5
+-- ONE SERVER SCRIPT
+-- Place in ServerScriptService
+
+local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+
+local remote = Instance.new("RemoteEvent")
+remote.Name = "NebulaHubRemote"
+remote.Parent = RS
+
+local folder = Instance.new("Folder")
+folder.Name = "NebulaObjects"
+folder.Parent = workspace
+
+local function createButton(parent, name, callback)
+    local button = Instance.new("TextButton")
+    button.Name = name
+    button.Size = UDim2.new(1, -12, 0, 38)
+    button.BackgroundColor3 = Color3.fromRGB(10, 35, 25)
+    button.TextColor3 = Color3.fromRGB(0, 255, 120)
+    button.Text = name
+    button.Font = Enum.Font.Code
+    button.TextSize = 15
+    button.Parent = parent
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 7)
+    corner.Parent = button
+
+    return button
+end
+
+local function createGUI(player)
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "NEBULA_HUB"
+    gui.ResetOnSpawn = false
+
+    local main = Instance.new("Frame")
+    main.Size = UDim2.fromOffset(420, 440)
+    main.Position = UDim2.new(.5, -210, .5, -220)
+    main.BackgroundColor3 = Color3.fromRGB(5, 10, 15)
+    main.Active = true
+    main.Draggable = true
+    main.Parent = gui
+
+    Instance.new("UICorner", main).CornerRadius = UDim.new(0, 12)
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(0, 255, 120)
+    stroke.Thickness = 2
+    stroke.Parent = main
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, 0, 0, 55)
+    title.BackgroundColor3 = Color3.fromRGB(0, 30, 18)
+    title.Text = "NEBULA HUB V5"
+    title.TextColor3 = Color3.fromRGB(0, 255, 120)
+    title.Font = Enum.Font.Code
+    title.TextSize = 24
+    title.Parent = main
+
+    local list = Instance.new("ScrollingFrame")
+    list.Position = UDim2.fromOffset(10, 65)
+    list.Size = UDim2.new(1, -20, 1, -75)
+    list.BackgroundTransparency = 1
+    list.BorderSizePixel = 0
+    list.ScrollBarThickness = 4
+    list.Parent = main
+
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 7)
+    layout.Parent = list
+
+    layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        list.CanvasSize = UDim2.fromOffset(0, layout.AbsoluteContentSize.Y + 10)
+    end)
+
+    createButton(list, "CREATE SHARED PART").Activated:Connect(function()
+        remote:FireClient(player, "CreatePart")
+    end)
+
+    createButton(list, "DELETE NEAREST PART").Activated:Connect(function()
+        remote:FireClient(player, "DeletePart")
+    end)
+
+    createButton(list, "COLOR NEAREST PART").Activated:Connect(function()
+        remote:FireClient(player, "ColorPart")
+    end)
+
+    createButton(list, "RESET CHARACTER").Activated:Connect(function()
+        local character = player.Character
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        if humanoid then humanoid.Health = 0 end
+    end)
+
+    createButton(list, "SERVER INFORMATION").Activated:Connect(function()
+        print("NEBULA HUB | Place:", game.PlaceId)
+        print("Players:", #Players:GetPlayers())
+        print("Server:", game.JobId)
+    end)
+
+    gui.Parent = player:WaitForChild("PlayerGui")
+end
+
+remote.OnServerEvent:Connect(function(player, action, position)
+    if typeof(position) ~= "Vector3" then return end
+
+    local character = player.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+
+    if (root.Position - position).Magnitude > 50 then
+        return
+    end
+
+    if action == "CreatePart" then
+        local part = Instance.new("Part")
+        part.Name = "NebulaPart"
+        part.Size = Vector3.new(4, 1, 4)
+        part.Position = position
+        part.Anchored = true
+        part.Material = Enum.Material.Neon
+        part.Color = Color3.fromRGB(0, 255, 120)
+        part.Parent = folder
+
+    elseif action == "DeletePart" then
+        for _, part in ipairs(folder:GetChildren()) do
+            if part:IsA("BasePart") and
+                (part.Position - position).Magnitude < 10 then
+                part:Destroy()
+                break
+            end
+        end
+
+    elseif action == "ColorPart" then
+        for _, part in ipairs(folder:GetChildren()) do
+            if part:IsA("BasePart") and
+                (part.Position - position).Magnitude < 10 then
+                part.Color = Color3.fromRGB(255, 0, 100)
+            end
+        end
+    end
+end)
+
+Players.PlayerAdded:Connect(createGUI)
+
+for _, player in ipairs(Players:GetPlayers()) do
+    task.spawn(createGUI, player)
+end
+
+print("NEBULA HUB V5 LOADED")
