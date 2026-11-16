@@ -1,412 +1,2243 @@
 --[[
-    NEBULA HUB V6
-    Single LocalScript
-    Place in StarterPlayerScripts
-    Features: Movement, Player, Visuals, Utilities
+    ███╗   ██╗███████╗██████╗ ██╗   ██╗██╗      █████╗     ██╗  ██╗██╗   ██╗██████╗     ██╗   ██╗███████╗
+    NEBULA HUB V7  -  Executor SIMULATOR for your own Roblox game
+    -----------------------------------------------------------------------------------
+    INSTALL : put this file in a LocalScript inside StarterPlayer > StarterPlayerScripts
+              (or StarterGui). It is ONE self-contained script. No modules needed.
+    NOTE    : This is a simulator UI. "Execute" runs a safe built-in simulator interpreter
+              (commands, print/warn, a few property assignments) - it never runs arbitrary code.
+    SETTINGS: saved to a player attribute (lasts for the session). Add a DataStore if you
+              want cross-session saves.
+
+    OPTIONAL - SERVER-AUTHORIZED BUILDING
+    If a RemoteFunction named "NebulaBuildRemote" exists in ReplicatedStorage, every build action
+    (create / edit / delete / restore) is sent to the server instead of being built locally.
+    Paste this into a Script in ServerScriptService to enable it:
+
+    --[==[
+    local RS=game:GetService("ReplicatedStorage")
+    local WS=game:GetService("Workspace")
+    local remote=Instance.new("RemoteFunction") remote.Name="NebulaBuildRemote" remote.Parent=RS
+    local trash=Instance.new("Folder") trash.Name="NebulaTrash" trash.Parent=RS
+    local CLASSES={Part=true,WedgePart=true,CornerWedgePart=true}
+    local PROPS={Size="Vector3",CFrame="CFrame",Color="Color3",Material="EnumItem",Transparency="number",
+        Reflectance="number",Anchored="boolean",CanCollide="boolean",Name="string",Shape="EnumItem"}
+    local function folderFor(plr)
+        local n="NebulaBuild_"..plr.UserId
+        local f=WS:FindFirstChild(n)
+        if not f then f=Instance.new("Folder") f.Name=n f.Parent=WS end
+        return f
+    end
+    local function apply(part,props)
+        for k,v in pairs(props) do
+            local t=PROPS[k]
+            if t and typeof(v)==t then
+                if k=="Size" then v=Vector3.new(math.clamp(v.X,0.2,512),math.clamp(v.Y,0.2,512),math.clamp(v.Z,0.2,512)) end
+                if k=="Name" then v=string.sub(v,1,40) end
+                if not (k=="Shape" and not part:IsA("Part")) then pcall(function() part[k]=v end) end
+            end
+        end
+    end
+    remote.OnServerInvoke=function(plr,action,a,b)
+        local folder=folderFor(plr)
+        if action=="create" then
+            if type(a)~="string" or not CLASSES[a] or type(b)~="table" then return nil end
+            if #folder:GetChildren()>=500 then return nil end
+            local p=Instance.new(a) p.Anchored=true apply(p,b)
+            p:SetAttribute("Owner",plr.UserId) p.Parent=folder
+            return p
+        elseif action=="set" then
+            if typeof(a)~="Instance" or a:GetAttribute("Owner")~=plr.UserId or type(b)~="table" then return nil end
+            apply(a,b) return true
+        elseif action=="parent" then
+            if typeof(a)~="Instance" or a:GetAttribute("Owner")~=plr.UserId then return nil end
+            a.Parent=(b==true) and trash or folder
+            return true
+        end
+    end
+    ]==]
 ]]
 
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local Lighting = game:GetService("Lighting")
+local Workspace = game:GetService("Workspace")
+local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local Player = Players.LocalPlayer
-local Camera = workspace.CurrentCamera
+local player = Players.LocalPlayer
+if not RunService:IsClient() or not player then
+	warn("[NEBULA HUB V7] Run this as a LocalScript (StarterPlayerScripts).")
+	return
+end
+local playerGui = player:WaitForChild("PlayerGui")
+local GUI_NAME = "NebulaHubV7"
 
-local Settings = {
-    Speed = 16,
-    Jump = 50,
-    Fly = false,
-    InfiniteJump = false,
-    ESP = false,
-    Fullbright = false,
-    Noclip = false,
+-- Prevent duplicate GUIs / double-run
+if _G.__NebulaV7 and _G.__NebulaV7.Destroy then pcall(_G.__NebulaV7.Destroy) end
+do
+	local prev = playerGui:FindFirstChild(GUI_NAME)
+	if prev then prev:Destroy() end
+end
+
+----------------------------------------------------------------------
+-- UTILITIES
+----------------------------------------------------------------------
+local conns = {}
+local function track(c) conns[#conns + 1] = c return c end
+local function fail(msg) error(msg, 0) end
+local function cleanErr(e) return (tostring(e):gsub("^[^:]-:%d+:%s*", "")) end
+local function n2s(v)
+	if v == math.floor(v) then return tostring(math.floor(v)) end
+	return string.format("%g", v)
+end
+local function esc(s)
+	s = tostring(s)
+	s = s:gsub("&", "&amp;")
+	s = s:gsub("<", "&lt;")
+	s = s:gsub(">", "&gt;")
+	return s
+end
+local function hueColor(h) return Color3.fromHSV((h % 360) / 360, 0.85, 1) end
+local HUE_NAMES = { "Red", "Orange", "Yellow", "Lime", "Green", "Spring", "Cyan", "Azure", "Blue", "Violet", "Magenta", "Rose" }
+local function hueName(h) return HUE_NAMES[math.floor((h % 360) / 30) + 1] end
+
+local notify, log, refreshList, showPage, builderRefresh, setStatus, playInjection, runSim, loadIntoEditor, applyAccent, toggleWindow
+
+----------------------------------------------------------------------
+-- SETTINGS
+----------------------------------------------------------------------
+local DEFAULTS = {
+	scale = 1, transparency = 0.04, accent = 1, anim = true, notify = true, notifyTime = 3,
+	brand = "NEBULA", keyToggle = "RightShift", keyFly = "F", keyDash = "Q", keyNoclip = "N",
+	consoleSize = 13, editorSize = 14,
 }
+local Settings = {}
+local function loadSettings()
+	for k, v in pairs(DEFAULTS) do Settings[k] = v end
+	local raw = player:GetAttribute("NebulaV7Settings")
+	if type(raw) == "string" then
+		local ok, t = pcall(HttpService.JSONDecode, HttpService, raw)
+		if ok and type(t) == "table" then
+			for k, v in pairs(t) do
+				if DEFAULTS[k] ~= nil and type(v) == type(DEFAULTS[k]) then Settings[k] = v end
+			end
+		end
+	end
+end
+local function saveSettings()
+	player:SetAttribute("NebulaV7Settings", HttpService:JSONEncode(Settings))
+end
+loadSettings()
 
-local selectedPlayer = nil
-local highlights = {}
-local minimized = false
+local ACCENTS = {
+	{ "Nebula Purple", 168, 85, 247 }, { "Magenta", 236, 72, 190 }, { "Cyan", 34, 211, 238 },
+	{ "Emerald", 52, 211, 153 }, { "Amber", 251, 146, 60 }, { "Crimson", 244, 63, 94 },
+}
+local Theme = {
+	bg = Color3.fromRGB(9, 7, 16), panel = Color3.fromRGB(18, 14, 32), panel2 = Color3.fromRGB(30, 23, 52),
+	text = Color3.fromRGB(240, 235, 255), sub = Color3.fromRGB(158, 148, 190),
+	good = Color3.fromRGB(80, 220, 150), warn = Color3.fromRGB(250, 200, 80), bad = Color3.fromRGB(250, 90, 110),
+	accent = Color3.fromRGB(168, 85, 247),
+}
+local accentBound = {}
+local function bindAccent(inst, prop)
+	accentBound[#accentBound + 1] = { inst, prop }
+	inst[prop] = Theme.accent
+	if prop == "BackgroundColor3" then inst:SetAttribute("Base", Theme.accent) end
+end
+applyAccent = function()
+	local a = ACCENTS[Settings.accent] or ACCENTS[1]
+	Theme.accent = Color3.fromRGB(a[2], a[3], a[4])
+	for i = #accentBound, 1, -1 do
+		local e = accentBound[i]
+		if e[1].Parent then
+			e[1][e[2]] = Theme.accent
+			if e[2] == "BackgroundColor3" then e[1]:SetAttribute("Base", Theme.accent) end
+		else
+			table.remove(accentBound, i)
+		end
+	end
+end
+applyAccent()
 
-local function Character()
-    return Player.Character
+----------------------------------------------------------------------
+-- UI HELPERS
+----------------------------------------------------------------------
+local function tw(inst, t, props, style, dir)
+	if not Settings.anim then
+		for k, v in pairs(props) do inst[k] = v end
+		return nil
+	end
+	local tr = TweenService:Create(inst, TweenInfo.new(t, style or Enum.EasingStyle.Quint, dir or Enum.EasingDirection.Out), props)
+	tr:Play()
+	return tr
+end
+local function mk(class, props, parent)
+	local i = Instance.new(class)
+	for k, v in pairs(props or {}) do i[k] = v end
+	if parent then i.Parent = parent end
+	return i
+end
+local function corner(i, r) return mk("UICorner", { CornerRadius = UDim.new(0, r or 8) }, i) end
+local function stroke(i, color, th, tr) return mk("UIStroke", { Color = color or Theme.accent, Thickness = th or 1, Transparency = tr or 0.5, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, i) end
+local LO = 0
+local function nextLO() LO += 1 return LO end
+local function lbl(parent, text, size, pos, o)
+	o = o or {}
+	return mk("TextLabel", {
+		BackgroundTransparency = 1, Text = text, Size = size, Position = pos or UDim2.new(),
+		TextColor3 = o.color or Theme.text, Font = o.font or Enum.Font.Gotham, TextSize = o.ts or 13,
+		TextXAlignment = o.ax or Enum.TextXAlignment.Left, TextYAlignment = o.ay or Enum.TextYAlignment.Center,
+		TextTruncate = o.trunc and Enum.TextTruncate.AtEnd or Enum.TextTruncate.None,
+		RichText = o.rich or false, TextWrapped = o.wrap or false,
+	}, parent)
+end
+local function setBase(b, c) b:SetAttribute("Base", c) b.BackgroundColor3 = c end
+local function btn(parent, text, size, pos, cb, o)
+	o = o or {}
+	local b = mk("TextButton", {
+		AutoButtonColor = false, Text = text, Size = size, Position = pos or UDim2.new(),
+		TextColor3 = o.color or Theme.text, Font = Enum.Font.GothamMedium, TextSize = o.ts or 13, BorderSizePixel = 0,
+	}, parent)
+	corner(b, o.r or 8)
+	if o.accent then bindAccent(b, "BackgroundColor3") else setBase(b, o.bg or Theme.panel2) end
+	b.MouseEnter:Connect(function()
+		local base = b:GetAttribute("Base") or Theme.panel2
+		tw(b, 0.12, { BackgroundColor3 = base:Lerp(Color3.new(1, 1, 1), 0.14) })
+	end)
+	b.MouseLeave:Connect(function()
+		tw(b, 0.12, { BackgroundColor3 = b:GetAttribute("Base") or Theme.panel2 })
+	end)
+	if cb then b.Activated:Connect(function() cb() end) end
+	return b
+end
+local function listFrame(parent)
+	local sf = mk("ScrollingFrame", {
+		Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4,
+		CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+	}, parent)
+	bindAccent(sf, "ScrollBarImageColor3")
+	mk("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, sf)
+	return sf
+end
+local function rowFrame(parent, h)
+	local f = mk("Frame", { Size = UDim2.new(1, -8, 0, h or 34), BackgroundColor3 = Theme.panel, BorderSizePixel = 0, LayoutOrder = nextLO() }, parent)
+	corner(f, 8)
+	return f
+end
+local function section(parent, text)
+	local l = lbl(parent, string.upper(text), UDim2.new(1, -8, 0, 22), nil, { font = Enum.Font.GothamBold, ts = 11 })
+	bindAccent(l, "TextColor3")
+	l.LayoutOrder = nextLO()
+	return l
+end
+local function rowOf(parent, items, h)
+	local r = mk("Frame", { Size = UDim2.new(1, -8, 0, h or 32), BackgroundTransparency = 1, LayoutOrder = nextLO() }, parent)
+	local n, btns = #items, {}
+	for i, it in ipairs(items) do
+		btns[i] = btn(r, it[1], UDim2.new(1 / n, -4, 1, 0), UDim2.new((i - 1) / n, 2, 0, 0), it[2])
+	end
+	return r, btns
+end
+local function stepper(parent, text, get, dec, inc)
+	local r = rowFrame(parent, 36)
+	lbl(r, text, UDim2.new(0.5, 0, 1, 0), UDim2.new(0, 10, 0, 0), { font = Enum.Font.GothamMedium })
+	local val = lbl(r, "", UDim2.new(0, 98, 1, 0), UDim2.new(1, -144, 0, 0), { ax = Enum.TextXAlignment.Center, font = Enum.Font.GothamBold })
+	bindAccent(val, "TextColor3")
+	local function upd() val.Text = tostring(get()) end
+	btn(r, "–", UDim2.fromOffset(30, 26), UDim2.new(1, -178, 0.5, -13), function() dec() upd() end)
+	btn(r, "+", UDim2.fromOffset(30, 26), UDim2.new(1, -40, 0.5, -13), function() inc() upd() end)
+	upd()
+	return upd
+end
+local function toggleRow(parent, text, get, set)
+	local r = rowFrame(parent, 36)
+	lbl(r, text, UDim2.new(0.6, 0, 1, 0), UDim2.new(0, 10, 0, 0), { font = Enum.Font.GothamMedium })
+	local b
+	local function upd()
+		local on = get()
+		b.Text = on and "ON" or "OFF"
+		if on then
+			b:SetAttribute("Base", Theme.accent) b.BackgroundColor3 = Theme.accent
+		else
+			setBase(b, Theme.panel2)
+		end
+	end
+	b = btn(r, "", UDim2.fromOffset(70, 26), UDim2.new(1, -80, 0.5, -13), function() set(not get()) upd() end)
+	upd()
+	return upd
 end
 
-local function Humanoid()
-    local c = Character()
-    return c and c:FindFirstChildOfClass("Humanoid")
+----------------------------------------------------------------------
+-- ROOT GUI + NOTIFICATIONS + CONSOLE DATA
+----------------------------------------------------------------------
+local gui = mk("ScreenGui", { Name = GUI_NAME, ResetOnSpawn = false, IgnoreGuiInset = true, ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = 1000 })
+gui.Parent = playerGui
+
+local notifHolder = mk("Frame", {
+	AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 12), Size = UDim2.new(0, 300, 1, -24),
+	BackgroundTransparency = 1, ZIndex = 300,
+}, gui)
+mk("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder, HorizontalAlignment = Enum.HorizontalAlignment.Right }, notifHolder)
+local toastCount = 0
+notify = function(title, msg, kind)
+	kind = kind or "info"
+	if not Settings.notify and kind ~= "error" then return end
+	local cols = { info = Theme.accent, ok = Theme.good, warn = Theme.warn, error = Theme.bad }
+	local col = cols[kind] or Theme.accent
+	toastCount += 1
+	local wrap = mk("Frame", { Size = UDim2.new(1, 0, 0, 64), BackgroundTransparency = 1, LayoutOrder = toastCount, ClipsDescendants = true, ZIndex = 300 }, notifHolder)
+	local card = mk("Frame", { Size = UDim2.new(1, 0, 1, -4), Position = UDim2.new(1, 40, 0, 0), BackgroundColor3 = Theme.panel, BorderSizePixel = 0, ZIndex = 301 }, wrap)
+	corner(card, 10) stroke(card, col, 1, 0.4)
+	local bar = mk("Frame", { Size = UDim2.new(0, 4, 1, -14), Position = UDim2.new(0, 6, 0, 7), BackgroundColor3 = col, BorderSizePixel = 0, ZIndex = 302 }, card)
+	corner(bar, 2)
+	local t1 = lbl(card, tostring(title), UDim2.new(1, -28, 0, 18), UDim2.new(0, 20, 0, 6), { font = Enum.Font.GothamBold, ts = 13, trunc = true })
+	local t2 = lbl(card, tostring(msg), UDim2.new(1, -28, 0, 28), UDim2.new(0, 20, 0, 24), { color = Theme.sub, ts = 11, wrap = true, ay = Enum.TextYAlignment.Top })
+	t1.ZIndex, t2.ZIndex = 302, 302
+	tw(card, 0.35, { Position = UDim2.new(0, 0, 0, 0) }, Enum.EasingStyle.Back)
+	local kids = {}
+	for _, c in ipairs(notifHolder:GetChildren()) do if c:IsA("Frame") then kids[#kids + 1] = c end end
+	if #kids > 5 then kids[1]:Destroy() end
+	task.delay(Settings.notifyTime, function()
+		if card.Parent then
+			tw(card, 0.3, { Position = UDim2.new(1, 40, 0, 0) })
+			task.wait(0.32)
+			if wrap.Parent then wrap:Destroy() end
+		end
+	end)
 end
 
-local function Root()
-    local c = Character()
-    return c and c:FindFirstChild("HumanoidRootPart")
+local Logs = {}
+local consoleAdd, miniRefresh
+local LOGCOL = { info = "#cbb8ff", ok = "#6ee7a8", warn = "#fcd34d", error = "#fb7185" }
+log = function(msg, kind)
+	local e = { t = os.date("%H:%M:%S"), m = tostring(msg), k = kind or "info" }
+	Logs[#Logs + 1] = e
+	if #Logs > 300 then table.remove(Logs, 1) end
+	if consoleAdd then consoleAdd(e) end
+	if miniRefresh then miniRefresh() end
+end
+refreshList = function() end
+
+----------------------------------------------------------------------
+-- CORE (game-side functionality)
+----------------------------------------------------------------------
+local Core, S, Toggles, Tickers = {}, {}, {}, {}
+S.flySpeed, S.sprintMult, S.dash, S.spin, S.fling = 60, 1.8, 110, 12, 120
+S.espColor, S.espFill, S.espNames = Color3.fromRGB(168, 85, 247), 0.6, true
+S.blur, S.bloom, S.sat, S.contrast = 16, 1.5, 0, 0
+S.hold = { up = false, down = false }
+S.waypoints = {}
+local defaultGravity = Workspace.Gravity
+local function cam() return Workspace.CurrentCamera end
+local function char() return player.Character end
+local function hum() local c = char() return c and c:FindFirstChildOfClass("Humanoid") end
+local function root() local c = char() return c and c:FindFirstChild("HumanoidRootPart") end
+do
+	local h = hum()
+	S.orig = { ws = h and h.WalkSpeed or 16, jp = h and h.JumpPower or 50, hip = h and h.HipHeight or 2, fov = cam() and cam().FieldOfView or 70 }
 end
 
-local function updateStats()
-    local h = Humanoid()
-    if h then
-        h.WalkSpeed = Settings.Speed
-        h.UseJumpPower = true
-        h.JumpPower = Settings.Jump
-    end
+local function removeTicker(name)
+	if Tickers[name] then Tickers[name]:Disconnect() Tickers[name] = nil end
+end
+local function addTicker(name, fn, phase)
+	removeTicker(name)
+	local ev = (phase == "Stepped") and RunService.Stepped or RunService.Heartbeat
+	Tickers[name] = ev:Connect(fn)
+end
+local function defToggle(name, title, fn, respawn)
+	Toggles[name] = { on = false, fn = fn, respawn = respawn, title = title }
+end
+local function setToggle(name, on)
+	local t = Toggles[name]
+	if not t then return false end
+	if on == nil then on = not t.on end
+	local ok, err = pcall(t.fn, on)
+	if ok then
+		t.on = on
+		notify(t.title, on and "Enabled" or "Disabled", on and "ok" or "info")
+		log(t.title .. (on and " enabled" or " disabled"), on and "ok" or "info")
+	else
+		t.on = false
+		pcall(t.fn, false)
+		notify(t.title, cleanErr(err), "error")
+		log("[" .. t.title .. "] " .. cleanErr(err), "error")
+	end
+	refreshList()
+	return t.on
 end
 
--- GUI
+-- Basic stats
+function Core.setWS(v) S.ws = v local h = hum() if h then h.WalkSpeed = v end end
+function Core.setJP(v) S.jp = v local h = hum() if h then h.UseJumpPower = true h.JumpPower = v end end
+function Core.setHip(v) S.hip = v local h = hum() if h then h.HipHeight = v end end
+function Core.setGravity(v) Workspace.Gravity = v end
+function Core.setFOV(v) v = math.clamp(v, 1, 120) S.fov = v local c = cam() if c then c.FieldOfView = v end end
+function Core.tp(cf) local r = root() if not r then fail("No character found.") end r.CFrame = cf end
+function Core.dash()
+	local r = root() if not r then fail("No character found.") end
+	r.AssemblyLinearVelocity = r.CFrame.LookVector * S.dash + Vector3.new(0, 25, 0)
+end
+function Core.reset() local h = hum() if not h then fail("No character found.") end h.Health = 0 end
+function Core.rejoin()
+	local ok = pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, player) end)
+	if not ok then
+		local ok2 = pcall(function() TeleportService:Teleport(game.PlaceId, player) end)
+		if not ok2 then fail("Rejoin is not available here (Studio / unpublished place).") end
+	end
+end
+function Core.sit() local h = hum() if not h then fail("No character found.") end h.Sit = true end
+function Core.emote(name)
+	local h = hum() if not h then fail("No character found.") end
+	local ok, res = pcall(h.PlayEmote, h, name)
+	if ok and res then return end
+	local a = char():FindFirstChild("Animate")
+	local pe = a and a:FindFirstChild("PlayEmote")
+	if pe then pe:Invoke(name) return end
+	fail("Emotes need an R15 avatar or the default Animate script.")
+end
+function Core.animSpeed(v)
+	local h = hum() local an = h and h:FindFirstChildOfClass("Animator")
+	if not an then fail("No Animator found on your character.") end
+	for _, t in ipairs(an:GetPlayingAnimationTracks()) do t:AdjustSpeed(v) end
+end
+function Core.scale(s)
+	local h = hum() if not h then fail("No character found.") end
+	local ok = false
+	for _, n in ipairs({ "BodyHeightScale", "BodyWidthScale", "BodyDepthScale", "HeadScale" }) do
+		local v = h:FindFirstChild(n)
+		if v then v.Value = s ok = true end
+	end
+	if not ok then fail("Scaling needs an R15 character with scale values.") end
+end
+function Core.fling()
+	local r = root() if not r then fail("No character found.") end
+	r.AssemblyLinearVelocity = r.CFrame.LookVector * S.fling + Vector3.new(0, S.fling, 0)
+	r.AssemblyAngularVelocity = Vector3.new(math.random(-40, 40), 60, math.random(-40, 40))
+end
+function Core.backflip()
+	local r, h = root(), hum()
+	if not r or not h then fail("No character found.") end
+	r.AssemblyLinearVelocity = Vector3.new(0, 55, 0) - r.CFrame.LookVector * 12
+	local t = 0
+	addTicker("flip", function(dt)
+		local rr = root()
+		if not rr then removeTicker("flip") return end
+		t += dt
+		rr.CFrame = rr.CFrame * CFrame.Angles(-math.rad(360) * dt / 0.6, 0, 0)
+		if t >= 0.6 then removeTicker("flip") end
+	end)
+end
+function Core.charParts(fn)
+	local c = char() if not c then fail("No character found.") end
+	for _, p in ipairs(c:GetDescendants()) do if p:IsA("BasePart") then fn(p) end end
+end
+function Core.bodyHue(h)
+	local c = char() if not c then fail("No character found.") end
+	local col = hueColor(h)
+	local bc = c:FindFirstChildOfClass("BodyColors")
+	if bc then
+		bc.HeadColor3, bc.TorsoColor3, bc.LeftArmColor3, bc.RightArmColor3, bc.LeftLegColor3, bc.RightLegColor3 = col, col, col, col, col, col
+	else
+		Core.charParts(function(p) if p.Name ~= "HumanoidRootPart" then p.Color = col end end)
+	end
+end
+function Core.bodyMat(name)
+	Core.charParts(function(p) if p.Name ~= "HumanoidRootPart" then p.Material = Enum.Material[name] end end)
+end
 
-local GUI = Instance.new("ScreenGui")
-GUI.Name = "NEBULA_HUB_V6"
-GUI.ResetOnSpawn = false
-GUI.Parent = Player:WaitForChild("PlayerGui")
+-- Players
+local function others()
+	local t = {}
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= player and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then t[#t + 1] = p end
+	end
+	return t
+end
+local function findPlayer(q)
+	if not q then fail("Missing player name.") end
+	q = q:lower()
+	local best
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= player then
+			local n, d = p.Name:lower(), p.DisplayName:lower()
+			if n == q or d == q then return p end
+			if not best and (n:sub(1, #q) == q or d:sub(1, #q) == q) then best = p end
+		end
+	end
+	if not best then fail("Player not found: " .. q) end
+	return best
+end
+function Core.tpPlayer(p)
+	local tr = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+	if not tr then fail(p.Name .. " has no character.") end
+	Core.tp(tr.CFrame * CFrame.new(0, 0, 3))
+end
+function Core.bring(p)
+	local r = root()
+	local tr = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+	if not r or not tr then fail("Character missing.") end
+	tr.CFrame = r.CFrame * CFrame.new(0, 0, -4)
+end
+function Core.pick(mode)
+	local list, r = others(), root()
+	if #list == 0 then fail("No other players with characters.") end
+	if mode == "random" then return list[math.random(#list)] end
+	if not r then fail("No character found.") end
+	table.sort(list, function(a, b)
+		return (a.Character.HumanoidRootPart.Position - r.Position).Magnitude < (b.Character.HumanoidRootPart.Position - r.Position).Magnitude
+	end)
+	return mode == "nearest" and list[1] or list[#list]
+end
+function Core.info(p)
+	p = p or player
+	local c = p.Character
+	local h = c and c:FindFirstChildOfClass("Humanoid")
+	local r = c and c:FindFirstChild("HumanoidRootPart")
+	local pos = r and string.format("%d, %d, %d", r.Position.X, r.Position.Y, r.Position.Z) or "n/a"
+	local msg = string.format("@%s | ID %d | Age %dd | HP %s | Pos %s", p.Name, p.UserId, p.AccountAge, h and tostring(math.floor(h.Health)) or "n/a", pos)
+	notify(p.DisplayName, msg, "info")
+	log("INFO " .. p.DisplayName .. " " .. msg, "info")
+end
 
-local Main = Instance.new("Frame")
-Main.Size = UDim2.fromOffset(650, 470)
-Main.Position = UDim2.new(.5, -325, .5, -235)
-Main.BackgroundColor3 = Color3.fromRGB(7, 10, 16)
-Main.Active = true
-Main.Draggable = true
-Main.Parent = GUI
+-- Toggles ------------------------------------------------------------
+-- FLY
+local flyObjs = {}
+local function flyStop()
+	removeTicker("fly")
+	for _, o in pairs(flyObjs) do o:Destroy() end
+	table.clear(flyObjs)
+	local h = hum() if h then h.PlatformStand = false end
+	if S.flyPad then S.flyPad.Visible = false end
+end
+defToggle("fly", "Fly", function(on)
+	flyStop()
+	if not on then return end
+	local r, h = root(), hum()
+	if not r or not h then fail("No character found - wait for respawn.") end
+	local bv = Instance.new("BodyVelocity") bv.MaxForce = Vector3.new(9e9, 9e9, 9e9) bv.Velocity = Vector3.zero bv.Parent = r
+	local bg = Instance.new("BodyGyro") bg.MaxTorque = Vector3.new(9e9, 9e9, 9e9) bg.P = 9e4 bg.CFrame = r.CFrame bg.Parent = r
+	flyObjs.bv, flyObjs.bg = bv, bg
+	h.PlatformStand = true
+	if S.flyPad and UIS.TouchEnabled then S.flyPad.Visible = true end
+	addTicker("fly", function()
+		local rr, hh, cm = root(), hum(), cam()
+		if not rr or not hh or not cm or not bv.Parent then return end
+		local up = 0
+		if UIS:IsKeyDown(Enum.KeyCode.Space) or S.hold.up then up += 1 end
+		if UIS:IsKeyDown(Enum.KeyCode.LeftControl) or UIS:IsKeyDown(Enum.KeyCode.LeftShift) or S.hold.down then up -= 1 end
+		local md = hh.MoveDirection
+		if UIS.TouchEnabled and md.Magnitude > 0 and up == 0 then up = math.clamp(cm.CFrame.LookVector.Y * 1.5, -1, 1) end
+		bv.Velocity = md * S.flySpeed + Vector3.new(0, up * S.flySpeed, 0)
+		local look = cm.CFrame.LookVector
+		bg.CFrame = CFrame.lookAt(rr.Position, rr.Position + Vector3.new(look.X, 0, look.Z) + Vector3.new(0, 0, 1e-4))
+	end)
+end, true)
 
-Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 12)
+-- NOCLIP
+local noclipTouched = {}
+defToggle("noclip", "Noclip", function(on)
+	removeTicker("noclip")
+	if on then
+		addTicker("noclip", function()
+			local c = char()
+			if not c then return end
+			for _, p in ipairs(c:GetDescendants()) do
+				if p:IsA("BasePart") and p.CanCollide then p.CanCollide = false noclipTouched[p] = true end
+			end
+		end, "Stepped")
+	else
+		for p in pairs(noclipTouched) do if p.Parent then p.CanCollide = true end end
+		table.clear(noclipTouched)
+	end
+end, true)
 
-local Border = Instance.new("UIStroke")
-Border.Color = Color3.fromRGB(0, 255, 120)
-Border.Thickness = 2
-Border.Parent = Main
+defToggle("infjump", "Infinite Jump", function() end)
+defToggle("doublejump", "Double Jump", function() end)
+defToggle("sprint", "Sprint (hold Shift)", function() end)
 
-local Header = Instance.new("TextLabel")
-Header.Size = UDim2.new(1, 0, 0, 60)
-Header.BackgroundColor3 = Color3.fromRGB(0, 30, 18)
-Header.Text = "NEBULA HUB V6  //  110+"
-Header.TextColor3 = Color3.fromRGB(0, 255, 120)
-Header.Font = Enum.Font.Code
-Header.TextSize = 24
-Header.Parent = Main
+-- SPIN
+defToggle("spin", "Spin", function(on)
+	removeTicker("spin")
+	if on then
+		if not root() then fail("No character found.") end
+		addTicker("spin", function(dt)
+			local r = root()
+			if r then r.CFrame = r.CFrame * CFrame.Angles(0, math.rad(S.spin) * dt * 60, 0) end
+		end)
+	end
+end, true)
 
-local Sidebar = Instance.new("Frame")
-Sidebar.Position = UDim2.fromOffset(0, 65)
-Sidebar.Size = UDim2.fromOffset(145, 405)
-Sidebar.BackgroundColor3 = Color3.fromRGB(10, 17, 20)
-Sidebar.BorderSizePixel = 0
-Sidebar.Parent = Main
+-- BUNNY HOP
+defToggle("bhop", "Bunny Hop", function(on)
+	removeTicker("bhop")
+	if on then
+		addTicker("bhop", function()
+			local h = hum()
+			if h and h.MoveDirection.Magnitude > 0 and h.FloorMaterial ~= Enum.Material.Air then h.Jump = true end
+		end)
+	end
+end, true)
 
-local Content = Instance.new("ScrollingFrame")
-Content.Position = UDim2.fromOffset(155, 75)
-Content.Size = UDim2.fromOffset(485, 385)
-Content.BackgroundTransparency = 1
-Content.BorderSizePixel = 0
-Content.ScrollBarThickness = 4
-Content.Parent = Main
+-- AIR WALK
+local airPart
+defToggle("airwalk", "Air Walk", function(on)
+	removeTicker("airwalk")
+	if airPart then airPart:Destroy() airPart = nil end
+	if not on then return end
+	local r, h = root(), hum()
+	if not r or not h then fail("No character found.") end
+	airPart = mk("Part", { Size = Vector3.new(7, 1, 7), Anchored = true, CanQuery = false, Transparency = 0.65, Material = Enum.Material.Neon, Color = Theme.accent, TopSurface = Enum.SurfaceType.Smooth }, Workspace)
+	local y = r.Position.Y - (h.HipHeight + r.Size.Y / 2) - 0.5
+	addTicker("airwalk", function(dt)
+		local rr = root()
+		if not rr or not airPart then return end
+		if UIS:IsKeyDown(Enum.KeyCode.Space) then y += 22 * dt end
+		if UIS:IsKeyDown(Enum.KeyCode.LeftShift) or UIS:IsKeyDown(Enum.KeyCode.LeftControl) then y -= 22 * dt end
+		airPart.Position = Vector3.new(rr.Position.X, y, rr.Position.Z)
+	end)
+end, true)
 
-local Layout = Instance.new("UIListLayout")
-Layout.Padding = UDim.new(0, 8)
-Layout.Parent = Content
+-- ESP / HIGHLIGHT
+local espObjs, espConns = {}, {}
+local function espClear()
+	for _, o in pairs(espObjs) do if o then o:Destroy() end end
+	table.clear(espObjs)
+	for _, c in ipairs(espConns) do c:Disconnect() end
+	table.clear(espConns)
+end
+local function espAdd(p)
+	if p == player then return end
+	local c = p.Character
+	if not c then return end
+	if espObjs[p] then espObjs[p]:Destroy() end
+	local h = mk("Highlight", { Name = "NebulaESP", FillColor = S.espColor, OutlineColor = Color3.new(1, 1, 1), FillTransparency = S.espFill, DepthMode = Enum.HighlightDepthMode.AlwaysOnTop, Adornee = c }, c)
+	if S.espNames then
+		local head = c:FindFirstChild("Head")
+		if head then
+			local bb = mk("BillboardGui", { Size = UDim2.fromOffset(140, 22), StudsOffset = Vector3.new(0, 2.6, 0), AlwaysOnTop = true, Adornee = head }, h)
+			local t = lbl(bb, p.DisplayName, UDim2.fromScale(1, 1), nil, { font = Enum.Font.GothamBold, ts = 14, ax = Enum.TextXAlignment.Center })
+			t.TextStrokeTransparency = 0.4
+			t.TextColor3 = S.espColor
+		end
+	end
+	espObjs[p] = h
+end
+local function espRun(on, names, other)
+	espClear()
+	if not on then return end
+	Toggles[other].on = false
+	S.espNames = names
+	for _, p in ipairs(Players:GetPlayers()) do
+		espAdd(p)
+		espConns[#espConns + 1] = p.CharacterAdded:Connect(function() task.wait(0.15) espAdd(p) end)
+	end
+	espConns[#espConns + 1] = Players.PlayerAdded:Connect(function(p)
+		espConns[#espConns + 1] = p.CharacterAdded:Connect(function() task.wait(0.15) espAdd(p) end)
+	end)
+end
+defToggle("esp", "ESP Simulator", function(on) espRun(on, true, "highlight") end)
+defToggle("highlight", "Player Highlight", function(on) espRun(on, false, "esp") end)
+function Core.espRefresh()
+	if Toggles.esp.on then setToggle("esp", true) elseif Toggles.highlight.on then setToggle("highlight", true)
+	else notify("ESP", "Color saved - enable ESP or Highlight to see it.", "info") end
+end
 
-local Padding = Instance.new("UIPadding")
-Padding.PaddingTop = UDim.new(0, 8)
-Padding.PaddingLeft = UDim.new(0, 8)
-Padding.Parent = Content
-
-Layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-    Content.CanvasSize = UDim2.fromOffset(0, Layout.AbsoluteContentSize.Y + 20)
+-- SPECTATE
+defToggle("spectate", "Spectate", function(on)
+	local c = cam()
+	if not c then fail("No camera.") end
+	if on then
+		local tc = S.specTarget and S.specTarget.Character
+		local h = tc and tc:FindFirstChildOfClass("Humanoid")
+		if not h then fail("Target has no character.") end
+		c.CameraSubject = h
+	else
+		c.CameraSubject = hum()
+	end
 end)
+function Core.spectate(p) S.specTarget = p setToggle("spectate", true) end
 
-local function clear()
-    for _, v in ipairs(Content:GetChildren()) do
-        if v:IsA("GuiObject") and v ~= Layout and v ~= Padding then
-            v:Destroy()
-        end
-    end
-end
-
-local function button(text, callback)
-    local b = Instance.new("TextButton")
-    b.Size = UDim2.new(1, -15, 0, 40)
-    b.BackgroundColor3 = Color3.fromRGB(13, 29, 23)
-    b.TextColor3 = Color3.fromRGB(0, 255, 120)
-    b.Text = text
-    b.Font = Enum.Font.Code
-    b.TextSize = 15
-    b.Parent = Content
-
-    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 7)
-
-    local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(0, 150, 80)
-    stroke.Parent = b
-
-    b.MouseButton1Click:Connect(callback)
-    return b
-end
-
-local function tab(name, y, callback)
-    local b = Instance.new("TextButton")
-    b.Size = UDim2.new(1, -10, 0, 42)
-    b.Position = UDim2.fromOffset(5, y)
-    b.BackgroundColor3 = Color3.fromRGB(15, 30, 25)
-    b.TextColor3 = Color3.fromRGB(0, 255, 120)
-    b.Text = name
-    b.Font = Enum.Font.Code
-    b.TextSize = 14
-    b.Parent = Sidebar
-    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
-    b.MouseButton1Click:Connect(callback)
-end
-
--- MOVEMENT
-
-local function movementPage()
-    clear()
-
-    button("+10 SPEED", function()
-        Settings.Speed += 10
-        updateStats()
-    end)
-
-    button("-10 SPEED", function()
-        Settings.Speed = math.max(0, Settings.Speed - 10)
-        updateStats()
-    end)
-
-    button("+10 JUMP", function()
-        Settings.Jump += 10
-        updateStats()
-    end)
-
-    button("-10 JUMP", function()
-        Settings.Jump = math.max(0, Settings.Jump - 10)
-        updateStats()
-    end)
-
-    button("RESET SPEED AND JUMP", function()
-        Settings.Speed = 16
-        Settings.Jump = 50
-        updateStats()
-    end)
-
-    button("FLY: " .. tostring(Settings.Fly), function()
-        Settings.Fly = not Settings.Fly
-    end)
-
-    button("INFINITE JUMP: " .. tostring(Settings.InfiniteJump), function()
-        Settings.InfiniteJump = not Settings.InfiniteJump
-    end)
-
-    button("NOCLIP: " .. tostring(Settings.Noclip), function()
-        Settings.Noclip = not Settings.Noclip
-    end)
-end
-
--- PLAYER
-
-local function playerPage()
-    clear()
-
-    local search = Instance.new("TextBox")
-    search.Size = UDim2.new(1, -15, 0, 40)
-    search.BackgroundColor3 = Color3.fromRGB(15, 25, 22)
-    search.PlaceholderText = "Search players..."
-    search.Text = ""
-    search.TextColor3 = Color3.new(1, 1, 1)
-    search.Font = Enum.Font.Code
-    search.Parent = Content
-
-    local function refresh()
-        for _, v in ipairs(Content:GetChildren()) do
-            if v:IsA("TextButton") then v:Destroy() end
-        end
-
-        for _, target in ipairs(Players:GetPlayers()) do
-            if target ~= Player and target.Name:lower():find(search.Text:lower(), 1, true) then
-                button("SELECT: " .. target.Name, function()
-                    selectedPlayer = target
-                end)
-            end
-        end
-    end
-
-    search:GetPropertyChangedSignal("Text"):Connect(refresh)
-    refresh()
-
-    button("TELEPORT TO SELECTED", function()
-        local root = Root()
-        local targetRoot = selectedPlayer
-            and selectedPlayer.Character
-            and selectedPlayer.Character:FindFirstChild("HumanoidRootPart")
-
-        if root and targetRoot then
-            root.CFrame = targetRoot.CFrame * CFrame.new(0, 0, 4)
-        end
-    end)
-
-    button("SPECTATE SELECTED", function()
-        local h = selectedPlayer
-            and selectedPlayer.Character
-            and selectedPlayer.Character:FindFirstChildOfClass("Humanoid")
-
-        if h then Camera.CameraSubject = h end
-    end)
-
-    button("STOP SPECTATING", function()
-        local h = Humanoid()
-        if h then Camera.CameraSubject = h end
-    end)
-
-    button("SELECTED PLAYER INFO", function()
-        if selectedPlayer then
-            print("Name:", selectedPlayer.Name)
-            print("User ID:", selectedPlayer.UserId)
-            print("Display Name:", selectedPlayer.DisplayName)
-        end
-    end)
-
-    button("FLING SELECTED PLAYER", function()
-        warn("Connect this button to a server-authorized knockback RemoteEvent in your own game.")
-    end)
-end
+-- CHARACTER LOOKS
+local invisBackup = {}
+defToggle("invisible", "Invisible Character", function(on)
+	if on then
+		Core.charParts(function(p) if invisBackup[p] == nil then invisBackup[p] = p.Transparency end p.Transparency = 1 end)
+	else
+		for p, v in pairs(invisBackup) do if p.Parent then p.Transparency = v end end
+		table.clear(invisBackup)
+	end
+end, true)
+local neonBackup = {}
+defToggle("neon", "Neon Body", function(on)
+	if on then
+		Core.charParts(function(p) if neonBackup[p] == nil then neonBackup[p] = p.Material end p.Material = Enum.Material.Neon end)
+	else
+		for p, v in pairs(neonBackup) do if p.Parent then p.Material = v end end
+		table.clear(neonBackup)
+	end
+end, true)
+defToggle("ragdoll", "Ragdoll", function(on)
+	local h = hum()
+	if not h then fail("No character found.") end
+	if on then h.PlatformStand = true h:ChangeState(Enum.HumanoidStateType.Ragdoll)
+	else h.PlatformStand = false h:ChangeState(Enum.HumanoidStateType.GettingUp) end
+end)
+defToggle("freeze", "Freeze Character", function(on)
+	local r = root()
+	if not r then fail("No character found.") end
+	r.Anchored = on
+end)
+defToggle("freezeanim", "Freeze Animation", function(on)
+	removeTicker("freezeanim")
+	local h = hum() local an = h and h:FindFirstChildOfClass("Animator")
+	if on then
+		if not an then fail("No Animator found on your character.") end
+		addTicker("freezeanim", function()
+			local a2 = hum() and hum():FindFirstChildOfClass("Animator")
+			if a2 then for _, t in ipairs(a2:GetPlayingAnimationTracks()) do t:AdjustSpeed(0) end end
+		end)
+	elseif an then
+		for _, t in ipairs(an:GetPlayingAnimationTracks()) do t:AdjustSpeed(1) end
+	end
+end)
 
 -- VISUALS
-
-local function visualsPage()
-    clear()
-
-    button("ESP: " .. tostring(Settings.ESP), function()
-        Settings.ESP = not Settings.ESP
-
-        for _, h in pairs(highlights) do
-            h:Destroy()
-        end
-        table.clear(highlights)
-
-        if Settings.ESP then
-            for _, target in ipairs(Players:GetPlayers()) do
-                if target ~= Player and target.Character then
-                    local h = Instance.new("Highlight")
-                    h.Adornee = target.Character
-                    h.FillColor = Color3.fromRGB(0, 255, 100)
-                    h.OutlineColor = Color3.new(1, 1, 1)
-                    h.Parent = GUI
-                    highlights[target] = h
-                end
-            end
-        end
-    end)
-
-    button("FULLBRIGHT: " .. tostring(Settings.Fullbright), function()
-        Settings.Fullbright = not Settings.Fullbright
-        Lighting.Brightness = Settings.Fullbright and 3 or 1
-        Lighting.ClockTime = Settings.Fullbright and 14 or 12
-        Lighting.GlobalShadows = not Settings.Fullbright
-    end)
-
-    button("RAINBOW BORDER", function()
-        task.spawn(function()
-            for i = 0, 100 do
-                Border.Color = Color3.fromHSV(i / 100, 1, 1)
-                task.wait(.03)
-            end
-        end)
-    end)
+local function fx(class, name)
+	local o = Lighting:FindFirstChild(name)
+	if o and o.ClassName == class then return o end
+	o = Instance.new(class) o.Name = name o.Parent = Lighting
+	return o
+end
+local fbBackup
+defToggle("fullbright", "Fullbright", function(on)
+	if on then
+		if not fbBackup then
+			fbBackup = { Brightness = Lighting.Brightness, ClockTime = Lighting.ClockTime, FogEnd = Lighting.FogEnd, GlobalShadows = Lighting.GlobalShadows, Ambient = Lighting.Ambient, OutdoorAmbient = Lighting.OutdoorAmbient }
+		end
+		Lighting.Brightness = 2 Lighting.ClockTime = 14 Lighting.FogEnd = 1e5 Lighting.GlobalShadows = false
+		Lighting.Ambient = Color3.fromRGB(178, 178, 178) Lighting.OutdoorAmbient = Color3.fromRGB(178, 178, 178)
+	elseif fbBackup then
+		for k, v in pairs(fbBackup) do Lighting[k] = v end
+		fbBackup = nil
+	end
+end)
+defToggle("blur", "Blur", function(on) local b = fx("BlurEffect", "NebulaV7_Blur") b.Size = S.blur b.Enabled = on end)
+defToggle("bloom", "Bloom", function(on) local b = fx("BloomEffect", "NebulaV7_Bloom") b.Intensity = S.bloom b.Size = 24 b.Threshold = 0.9 b.Enabled = on end)
+defToggle("cc", "Color Correction", function(on)
+	local c = fx("ColorCorrectionEffect", "NebulaV7_CC") c.Saturation = S.sat c.Contrast = S.contrast c.Enabled = on
+end)
+defToggle("shadows", "Global Shadows", function(on) Lighting.GlobalShadows = on end)
+Toggles.shadows.on = Lighting.GlobalShadows
+defToggle("shake", "Camera Shake", function(on)
+	removeTicker("shake")
+	local h = hum()
+	if on then
+		addTicker("shake", function()
+			local hh = hum()
+			if hh then hh.CameraOffset = Vector3.new(math.random() - 0.5, math.random() - 0.5, 0) * 0.5 end
+		end)
+	elseif h then
+		h.CameraOffset = Vector3.zero
+	end
+end, true)
+defToggle("firstperson", "First Person Lock", function(on)
+	player.CameraMode = on and Enum.CameraMode.LockFirstPerson or Enum.CameraMode.Classic
+end)
+function Core.tint(h)
+	local a = fx("Atmosphere", "NebulaV7_Atmo")
+	a.Color = Color3.fromHSV((h % 360) / 360, 0.5, 1) a.Decay = Color3.fromHSV((h % 360) / 360, 0.6, 0.8) a.Density = 0.35 a.Offset = 0.25
+end
+function Core.quality(n)
+	local ok = pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel["Level" .. string.format("%02d", n)] end)
+	if not ok then fail("Quality level is controlled by the Roblox client settings here.") end
 end
 
--- UTILITIES
+-- Double jump / infinite jump / sprint inputs
+track(UIS.JumpRequest:Connect(function()
+	local h, r = hum(), root()
+	if not h or not r then return end
+	if Toggles.infjump.on then h:ChangeState(Enum.HumanoidStateType.Jumping) return end
+	if Toggles.doublejump.on and not S.djUsed then
+		local st = h:GetState()
+		if st == Enum.HumanoidStateType.Freefall or st == Enum.HumanoidStateType.Jumping then
+			S.djUsed = true
+			local v = r.AssemblyLinearVelocity
+			local jp = h.UseJumpPower and h.JumpPower or math.sqrt(2 * Workspace.Gravity * h.JumpHeight)
+			r.AssemblyLinearVelocity = Vector3.new(v.X, jp, v.Z)
+		end
+	end
+end))
 
-local function utilitiesPage()
-    clear()
+-- Respawn handling
+local function onChar(c)
+	local h = c:WaitForChild("Humanoid", 10)
+	c:WaitForChild("HumanoidRootPart", 10)
+	if not h then return end
+	task.wait(0.1)
+	if S.ws then h.WalkSpeed = S.ws end
+	if S.jp then h.UseJumpPower = true h.JumpPower = S.jp end
+	if S.hip then h.HipHeight = S.hip end
+	if S.fov and cam() then cam().FieldOfView = S.fov end
+	S.djUsed = false
+	h.StateChanged:Connect(function(_, new)
+		if new == Enum.HumanoidStateType.Landed or new == Enum.HumanoidStateType.Running then S.djUsed = false end
+	end)
+	for _, t in pairs(Toggles) do
+		if t.on and t.respawn then pcall(t.fn, true) end
+	end
+	refreshList()
+end
+track(player.CharacterAdded:Connect(onChar))
+if player.Character then task.spawn(onChar, player.Character) end
 
-    button("RESET CHARACTER", function()
-        local h = Humanoid()
-        if h then h.Health = 0 end
-    end)
-
-    button("REJOIN SERVER", function()
-        TeleportService:Teleport(game.PlaceId, Player)
-    end)
-
-    button("FPS COUNTER", function()
-        print("FPS counter enabled in future update")
-    end)
-
-    button("SERVER INFORMATION", function()
-        print("Place ID:", game.PlaceId)
-        print("Job ID:", game.JobId)
-        print("Players:", #Players:GetPlayers())
-    end)
-
-    button("RESET CAMERA", function()
-        local h = Humanoid()
-        if h then Camera.CameraSubject = h end
-    end)
+----------------------------------------------------------------------
+-- BUILDER CORE (FE building toolbox)
+----------------------------------------------------------------------
+local MATS = { "Plastic", "SmoothPlastic", "Neon", "Wood", "WoodPlanks", "Metal", "DiamondPlate", "Foil", "Glass", "Ice", "Brick", "Concrete", "Granite", "Marble", "Slate", "Sand", "Grass", "Fabric", "Cobblestone", "Pebble" }
+local SHAPES = {
+	{ "Block", "Part", Enum.PartType.Block }, { "Ball", "Part", Enum.PartType.Ball }, { "Cylinder", "Part", Enum.PartType.Cylinder },
+	{ "Wedge", "WedgePart" }, { "Corner Wedge", "CornerWedgePart" },
+}
+local SNAPS = { 0, 0.25, 0.5, 1, 2, 4, 5, 8 }
+local B = { sel = nil, undo = {}, redo = {}, snapIdx = 4, hue = 270, color = Color3.fromHSV(270 / 360, 0.85, 1), matIdx = 2, shapeIdx = 1, size = Vector3.new(4, 1, 4), mode = "Place", step = 1, rot = 15, templates = {}, tplIdx = 1, active = false }
+local function snapAmount() return SNAPS[B.snapIdx] end
+local function snapV(v) local g = snapAmount() if g > 0 then return math.floor(v / g + 0.5) * g end return v end
+local function snapVec(v) return Vector3.new(snapV(v.X), snapV(v.Y), snapV(v.Z)) end
+local function buildFolder()
+	local n = "NebulaBuild_" .. player.UserId
+	local f = Workspace:FindFirstChild(n)
+	if not f then f = Instance.new("Folder") f.Name = n f.Parent = Workspace end
+	return f
+end
+local function trashFolder()
+	local f = ReplicatedStorage:FindFirstChild("NebulaTrash")
+	if not f then f = Instance.new("Folder") f.Name = "NebulaTrash" f.Parent = ReplicatedStorage end
+	return f
+end
+local function remote()
+	local r = ReplicatedStorage:FindFirstChild("NebulaBuildRemote")
+	return (r and r:IsA("RemoteFunction")) and r or nil
+end
+local function bCreate(class, props)
+	local rf = remote()
+	if rf then
+		local ok, res = pcall(rf.InvokeServer, rf, "create", class, props)
+		if ok and typeof(res) == "Instance" then return res end
+		fail(ok and "The server refused the build request." or "Server build error.")
+	end
+	if #buildFolder():GetChildren() >= 500 then fail("Part limit (500) reached.") end
+	local p = Instance.new(class)
+	p.Anchored = true p.TopSurface = Enum.SurfaceType.Smooth p.BottomSurface = Enum.SurfaceType.Smooth
+	for k, v in pairs(props) do p[k] = v end
+	p:SetAttribute("Owner", player.UserId)
+	p.Parent = buildFolder()
+	return p
+end
+local function bSet(part, props)
+	local rf = remote()
+	if rf then
+		local ok = pcall(rf.InvokeServer, rf, "set", part, props)
+		if not ok then fail("Server build error.") end
+		return
+	end
+	for k, v in pairs(props) do part[k] = v end
+end
+local function bTrash(part, trashed)
+	local rf = remote()
+	if rf then
+		local ok = pcall(rf.InvokeServer, rf, "parent", part, trashed)
+		if not ok then fail("Server build error.") end
+		return
+	end
+	part.Parent = trashed and trashFolder() or buildFolder()
+end
+local function record(u, r)
+	if B.collect then B.collect[#B.collect + 1] = { u = u, r = r } return end
+	B.undo[#B.undo + 1] = { u = u, r = r }
+	if #B.undo > 100 then table.remove(B.undo, 1) end
+	table.clear(B.redo)
+end
+local function group(fn)
+	B.collect = {}
+	local ok, err = pcall(fn)
+	local list = B.collect
+	B.collect = nil
+	if #list > 0 then
+		record(function() for i = #list, 1, -1 do list[i].u() end end, function() for i = 1, #list do list[i].r() end end)
+	end
+	if not ok then fail(cleanErr(err)) end
+end
+B.hl = mk("Highlight", { FillColor = Theme.accent, OutlineColor = Color3.new(1, 1, 1), FillTransparency = 0.7, Enabled = false, Name = "NebulaSel" }, Workspace)
+local function selectPart(p)
+	B.sel = p
+	B.hl.Adornee = p
+	B.hl.Enabled = p ~= nil
+	if builderRefresh then builderRefresh() end
+end
+local function shapeIdxOf(p)
+	if p:IsA("WedgePart") then return 4 end
+	if p:IsA("CornerWedgePart") then return 5 end
+	if p:IsA("Part") then
+		if p.Shape == Enum.PartType.Ball then return 2 elseif p.Shape == Enum.PartType.Cylinder then return 3 end
+	end
+	return 1
+end
+local function newPart(cf, size, opts)
+	opts = opts or {}
+	local shp = SHAPES[opts.shape or B.shapeIdx]
+	local props = { Size = size or B.size, CFrame = cf, Color = opts.color or B.color, Material = opts.mat or Enum.Material[MATS[B.matIdx]] }
+	if shp[3] then props.Shape = shp[3] end
+	local p = bCreate(shp[2], props)
+	record(function() if B.sel == p then selectPart(nil) end bTrash(p, true) end, function() bTrash(p, false) end)
+	selectPart(p)
+	return p
+end
+local function modify(part, props)
+	if not part or not part.Parent then fail("Select a part first.") end
+	local old = {}
+	for k in pairs(props) do old[k] = part[k] end
+	bSet(part, props)
+	record(function() bSet(part, old) end, function() bSet(part, props) end)
+end
+local function needSel() if not B.sel or not B.sel.Parent then fail("Select a part first.") end return B.sel end
+local Bld = {}
+function Bld.front(size)
+	local r = root()
+	if not r then return Vector3.new(0, size.Y / 2, 0) end
+	local base = (r.CFrame * CFrame.new(0, 0, -(math.max(size.X, size.Z) / 2 + 6))).Position
+	return snapVec(Vector3.new(base.X, r.Position.Y - 3 + size.Y / 2, base.Z))
+end
+function Bld.spawn(size, opts)
+	size = size or B.size
+	return newPart(CFrame.new(Bld.front(size)), size, opts)
+end
+function Bld.delete()
+	local p = needSel()
+	bTrash(p, true)
+	selectPart(nil)
+	record(function() bTrash(p, false) end, function() if B.sel == p then selectPart(nil) end bTrash(p, true) end)
+end
+function Bld.duplicate()
+	local p = needSel()
+	newPart(p.CFrame + Vector3.new(p.Size.X + 0.5, 0, 0), p.Size, { shape = shapeIdxOf(p), color = p.Color, mat = p.Material })
+end
+function Bld.move(axis, sign)
+	local p = needSel()
+	local cf = p.CFrame + axis * sign * B.step
+	local pos = snapVec(cf.Position)
+	modify(p, { CFrame = CFrame.new(pos) * (cf - cf.Position) })
+end
+function Bld.resize(axis, sign)
+	local p = needSel()
+	local s = p.Size + axis * sign * B.step
+	modify(p, { Size = Vector3.new(math.clamp(s.X, 0.2, 512), math.clamp(s.Y, 0.2, 512), math.clamp(s.Z, 0.2, 512)) })
+end
+function Bld.rotate(axis, sign)
+	local p = needSel()
+	modify(p, { CFrame = p.CFrame * CFrame.fromAxisAngle(axis, math.rad(B.rot) * sign) })
+end
+function Bld.paint(p)
+	p = p or needSel()
+	modify(p, { Color = B.color, Material = Enum.Material[MATS[B.matIdx]] })
+end
+function Bld.undo() local a = table.remove(B.undo) if not a then fail("Nothing to undo.") end a.u() B.redo[#B.redo + 1] = a end
+function Bld.redo() local a = table.remove(B.redo) if not a then fail("Nothing to redo.") end a.r() B.undo[#B.undo + 1] = a end
+function Bld.clearAll()
+	local list = buildFolder():GetChildren()
+	if #list == 0 then fail("Nothing to clear.") end
+	selectPart(nil)
+	group(function()
+		for _, p in ipairs(list) do
+			bTrash(p, true)
+			record(function() bTrash(p, false) end, function() bTrash(p, true) end)
+		end
+	end)
+end
+function Bld.saveTemplate()
+	local parts = buildFolder():GetChildren()
+	if #parts == 0 then fail("Build something first.") end
+	local origin = parts[1].CFrame
+	local t = { name = "Model " .. (#B.templates + 1), items = {} }
+	for i, p in ipairs(parts) do
+		if i > 100 then break end
+		t.items[#t.items + 1] = { shape = shapeIdxOf(p), size = p.Size, rel = origin:ToObjectSpace(p.CFrame), color = p.Color, mat = p.Material }
+	end
+	B.templates[#B.templates + 1] = t
+	B.tplIdx = #B.templates
+end
+function Bld.spawnTemplate()
+	local t = B.templates[B.tplIdx]
+	if not t then fail("No saved models yet - press Save Model first.") end
+	local base = CFrame.new(Bld.front(Vector3.new(8, 4, 8)) + Vector3.new(0, 2, 0))
+	group(function()
+		for _, it in ipairs(t.items) do newPart(base * it.rel, it.size, { shape = it.shape, color = it.color, mat = it.mat }) end
+	end)
+end
+local function worldRay(pos)
+	local c = cam()
+	if not c then return nil end
+	local ray = c:ScreenPointToRay(pos.X, pos.Y)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	local ex = {}
+	if char() then ex[#ex + 1] = char() end
+	if airPart then ex[#ex + 1] = airPart end
+	params.FilterDescendantsInstances = ex
+	return Workspace:Raycast(ray.Origin, ray.Direction * 1000, params)
+end
+local function worldClick(input)
+	local hit = worldRay(input.Position)
+	if not hit then return end
+	local inst = hit.Instance
+	local mine = inst:IsDescendantOf(buildFolder())
+	local function go()
+		local m = B.mode
+		if m == "Place" then
+			local pos = snapVec(hit.Position + hit.Normal * (B.size.Y / 2))
+			newPart(CFrame.new(pos), B.size)
+		elseif m == "Select" then
+			selectPart(mine and inst or nil)
+		elseif m == "Move" then
+			local p = needSel()
+			modify(p, { CFrame = CFrame.new(snapVec(hit.Position + hit.Normal * (p.Size.Y / 2))) * (p.CFrame - p.CFrame.Position) })
+		elseif m == "Paint" then
+			if mine then Bld.paint(inst) end
+		elseif m == "Delete" then
+			if mine then selectPart(inst) Bld.delete() end
+		elseif m == "Copy" then
+			if mine then selectPart(inst) Bld.duplicate() end
+		end
+	end
+	local ok, err = pcall(go)
+	if not ok then notify("Builder", cleanErr(err), "error") end
+	if builderRefresh then builderRefresh() end
 end
 
--- TABS
+----------------------------------------------------------------------
+-- COMMAND SYSTEM
+----------------------------------------------------------------------
+local Cmds, CmdList = {}, {}
+local function cmd(name, usage, desc, fn, aliases)
+	local c = { name = name, usage = usage, desc = desc, fn = fn }
+	Cmds[name] = c
+	for _, a in ipairs(aliases or {}) do Cmds[a] = c end
+	CmdList[#CmdList + 1] = c
+end
+local function num(a, default, mn, mx)
+	local n = tonumber(a)
+	if not n then
+		if default then return default end
+		fail("Expected a number.")
+	end
+	if mn then n = math.max(mn, n) end
+	if mx then n = math.min(mx, n) end
+	return n
+end
+local function runCommand(line)
+	line = line:match("^%s*(.-)%s*$")
+	line = line:gsub("^[/;:]", "")
+	if line == "" then return true end
+	local parts = {}
+	for w in line:gmatch("%S+") do parts[#parts + 1] = w end
+	local name = table.remove(parts, 1):lower()
+	local c = Cmds[name]
+	if not c then return false, "Unknown command '" .. name .. "'. Type 'help'." end
+	local ok, res = pcall(c.fn, parts)
+	if ok then return true, res end
+	return false, cleanErr(res)
+end
 
-tab("MOVEMENT", 10, movementPage)
-tab("PLAYER", 60, playerPage)
-tab("VISUALS", 110, visualsPage)
-tab("UTILITIES", 160, utilitiesPage)
-
--- INPUT
-
-UIS.JumpRequest:Connect(function()
-    if Settings.InfiniteJump then
-        local h = Humanoid()
-        if h then
-            h:ChangeState(Enum.HumanoidStateType.Jumping)
-        end
-    end
+cmd("help", "help [command]", "List commands or show one command's usage", function(a)
+	if a[1] then
+		local c = Cmds[a[1]:lower()]
+		if not c then fail("Unknown command.") end
+		return c.usage .. "  -  " .. c.desc
+	end
+	for _, c in ipairs(CmdList) do log(string.format("  %-24s %s", c.usage, c.desc), "info") end
+	showPage("Console")
+	return #CmdList .. " commands listed above."
+end, { "?", "cmds", "commands" })
+cmd("fly", "fly [speed]", "Enable flight", function(a) if a[1] then S.flySpeed = num(a[1], nil, 1, 1000) end setToggle("fly", true) return "Fly speed " .. S.flySpeed end)
+cmd("unfly", "unfly", "Disable flight", function() setToggle("fly", false) end)
+cmd("speed", "speed [n]", "Set WalkSpeed (no arg resets)", function(a) local v = num(a[1], S.orig.ws, 0, 1000) Core.setWS(v) return "WalkSpeed = " .. v end, { "walkspeed", "ws" })
+cmd("jump", "jump [n]", "Set JumpPower (no arg resets)", function(a) local v = num(a[1], S.orig.jp, 0, 1000) Core.setJP(v) return "JumpPower = " .. v end, { "jumppower", "jp" })
+cmd("hipheight", "hipheight [n]", "Set HipHeight", function(a) local v = num(a[1], S.orig.hip, 0, 100) Core.setHip(v) return "HipHeight = " .. v end, { "hip" })
+cmd("infinitejump", "infinitejump", "Jump in mid-air forever", function() setToggle("infjump", true) end, { "infjump", "ij" })
+cmd("uninfjump", "uninfjump", "Disable infinite jump", function() setToggle("infjump", false) end, { "noinfjump" })
+cmd("doublejump", "doublejump", "Toggle double jump", function() setToggle("doublejump") end, { "dj" })
+cmd("noclip", "noclip", "Walk through walls", function() setToggle("noclip", true) end)
+cmd("clip", "clip", "Disable noclip", function() setToggle("noclip", false) end)
+cmd("gravity", "gravity [n]", "Set workspace gravity (no arg resets)", function(a) local v = num(a[1], defaultGravity, 0, 1000) Core.setGravity(v) return "Gravity = " .. v end, { "grav" })
+cmd("fov", "fov [n]", "Set field of view (1-120)", function(a) local v = num(a[1], S.orig.fov, 1, 120) Core.setFOV(v) return "FOV = " .. v end)
+cmd("fullbright", "fullbright", "Max brightness", function() setToggle("fullbright", true) end, { "fb" })
+cmd("unfullbright", "unfullbright", "Restore lighting", function() setToggle("fullbright", false) end, { "unfb" })
+cmd("reset", "reset", "Respawn your character", function() Core.reset() end, { "respawn", "re" })
+cmd("rejoin", "rejoin", "Rejoin this server", function() Core.rejoin() return "Rejoining..." end, { "rj" })
+cmd("tp", "tp <x> <y> <z>", "Teleport to coordinates", function(a) Core.tp(CFrame.new(num(a[1]), num(a[2]), num(a[3]))) end)
+cmd("goto", "goto <player>", "Teleport to a player", function(a) local p = findPlayer(a[1]) Core.tpPlayer(p) return "Teleported to " .. p.Name end, { "tpto" })
+cmd("bring", "bring <player>", "Bring a player to you (local simulation)", function(a) local p = findPlayer(a[1]) Core.bring(p) return "Brought " .. p.Name .. " (client-side)" end)
+cmd("spectate", "spectate <player>", "Spectate a player", function(a) Core.spectate(findPlayer(a[1])) end, { "view" })
+cmd("unspectate", "unspectate", "Stop spectating", function() setToggle("spectate", false) end, { "unview" })
+cmd("esp", "esp", "Player ESP", function() setToggle("esp", true) end)
+cmd("unesp", "unesp", "Disable ESP", function() setToggle("esp", false) setToggle("highlight", false) end)
+cmd("spin", "spin [speed]", "Spin your character", function(a) if a[1] then S.spin = num(a[1], nil, 1, 100) end setToggle("spin", true) end)
+cmd("unspin", "unspin", "Stop spinning", function() setToggle("spin", false) end)
+cmd("sit", "sit", "Sit down", function() Core.sit() end)
+cmd("giant", "giant", "Giant mode (R15)", function() Core.scale(2.5) end)
+cmd("tiny", "tiny", "Tiny mode (R15)", function() Core.scale(0.4) end)
+cmd("normal", "normal", "Normal size", function() Core.scale(1) end)
+cmd("freeze", "freeze", "Freeze character", function() setToggle("freeze", true) end)
+cmd("thaw", "thaw", "Unfreeze character", function() setToggle("freeze", false) end, { "unfreeze" })
+cmd("ragdoll", "ragdoll", "Ragdoll", function() setToggle("ragdoll", true) end)
+cmd("unragdoll", "unragdoll", "Stop ragdoll", function() setToggle("ragdoll", false) end)
+cmd("dance", "dance [1-3]", "Play a dance emote", function(a) local n = num(a[1], 1, 1, 3) Core.emote(n == 1 and "dance" or ("dance" .. n)) end)
+cmd("emote", "emote <name>", "Play an emote", function(a) if not a[1] then fail("Emote name required.") end Core.emote(a[1]) end)
+cmd("dash", "dash", "Dash forward", function() Core.dash() end)
+cmd("sprint", "sprint", "Enable sprint (hold Shift)", function() setToggle("sprint", true) end)
+cmd("unsprint", "unsprint", "Disable sprint", function() setToggle("sprint", false) end)
+cmd("airwalk", "airwalk", "Walk on air", function() setToggle("airwalk", true) end)
+cmd("unairwalk", "unairwalk", "Disable air walk", function() setToggle("airwalk", false) end)
+cmd("time", "time <0-24>", "Set time of day", function(a) Lighting.ClockTime = num(a[1], nil, 0, 24) end)
+cmd("blur", "blur [size]", "Enable blur", function(a) S.blur = num(a[1], S.blur, 0, 56) setToggle("blur", true) end)
+cmd("unblur", "unblur", "Disable blur", function() setToggle("blur", false) end)
+cmd("bloom", "bloom [intensity]", "Enable bloom", function(a) S.bloom = num(a[1], S.bloom, 0, 10) setToggle("bloom", true) end)
+cmd("unbloom", "unbloom", "Disable bloom", function() setToggle("bloom", false) end)
+cmd("shake", "shake", "Toggle camera shake", function() setToggle("shake") end)
+cmd("quality", "quality <1-10>", "Graphics quality level", function(a) Core.quality(num(a[1], nil, 1, 10)) end)
+cmd("clear", "clear", "Clear the console", function() table.clear(Logs) if Core.clearConsole then Core.clearConsole() end end, { "cls" })
+cmd("console", "console", "Open the console page", function() showPage("Console") end)
+cmd("scale", "scale <0.6-1.6>", "Set UI scale", function(a) Settings.scale = math.clamp(num(a[1]), 0.6, 1.6) if Core.applyUI then Core.applyUI() end return "UI scale " .. Settings.scale end)
+cmd("theme", "theme <name>", "Change accent theme", function(a)
+	local q = (a[1] or ""):lower()
+	for i, t in ipairs(ACCENTS) do
+		if t[1]:lower():find(q, 1, true) then Settings.accent = i applyAccent() return "Theme: " .. t[1] end
+	end
+	fail("Themes: Purple, Magenta, Cyan, Emerald, Amber, Crimson")
 end)
-
-RunService.Stepped:Connect(function()
-    if Settings.Noclip then
-        local c = Character()
-        if c then
-            for _, part in ipairs(c:GetDescendants()) do
-                if part:IsA("BasePart") then
-                    part.CanCollide = false
-                end
-            end
-        end
-    end
+cmd("spawn", "spawn [size]", "Spawn a build part in front of you", function(a) local s = num(a[1], 4, 1, 64) Bld.spawn(Vector3.new(s, math.min(s, 1), s)) end)
+cmd("undo", "undo", "Undo last build action", function() Bld.undo() end)
+cmd("redo", "redo", "Redo build action", function() Bld.redo() end)
+cmd("snap", "snap <n>", "Set build grid snap (0 = off)", function(a)
+	local v = num(a[1], nil, 0, 8)
+	local best = 1
+	for i, g in ipairs(SNAPS) do if math.abs(g - v) < math.abs(SNAPS[best] - v) then best = i end end
+	B.snapIdx = best
+	return "Snap = " .. SNAPS[best]
 end)
-
-RunService.RenderStepped:Connect(function()
-    if not Settings.Fly then return end
-
-    local root = Root()
-    if not root then return end
-
-    local direction = Vector3.zero
-
-    if UIS:IsKeyDown(Enum.KeyCode.W) then
-        direction += Camera.CFrame.LookVector
-    end
-    if UIS:IsKeyDown(Enum.KeyCode.S) then
-        direction -= Camera.CFrame.LookVector
-    end
-    if UIS:IsKeyDown(Enum.KeyCode.A) then
-        direction -= Camera.CFrame.RightVector
-    end
-    if UIS:IsKeyDown(Enum.KeyCode.D) then
-        direction += Camera.CFrame.RightVector
-    end
-    if UIS:IsKeyDown(Enum.KeyCode.Space) then
-        direction += Vector3.yAxis
-    end
-    if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then
-        direction -= Vector3.yAxis
-    end
-
-    root.AssemblyLinearVelocity =
-        direction.Magnitude > 0
-        and direction.Unit * 50
-        or Vector3.zero
+cmd("color", "color <hex>", "Set build color (e.g. a855f7)", function(a)
+	local h = (a[1] or ""):gsub("#", "")
+	if #h ~= 6 or not h:match("^%x+$") then fail("Use a 6 digit hex color.") end
+	B.color = Color3.fromRGB(tonumber(h:sub(1, 2), 16), tonumber(h:sub(3, 4), 16), tonumber(h:sub(5, 6), 16))
 end)
+cmd("exec", "exec <script>", "Run inline simulator code", function(a) task.spawn(runSim, table.concat(a, " ")) end)
+cmd("inject", "inject", "Play the injection animation", function() playInjection() end)
+cmd("ui", "ui", "Show / hide the window", function() toggleWindow() end, { "toggleui" })
 
-Player.CharacterAdded:Connect(function()
-    task.wait(1)
-    updateStats()
+----------------------------------------------------------------------
+-- FEATURE LIBRARY (1000+ unique entries)
+----------------------------------------------------------------------
+local Features, nameSet = {}, {}
+local function F(cat, name, desc, kind, fn, key, label)
+	if nameSet[name] then
+		local n = 2
+		while nameSet[name .. " #" .. n] do n += 1 end
+		name = name .. " #" .. n
+	end
+	nameSet[name] = true
+	Features[#Features + 1] = { cat = cat, name = name, desc = desc, kind = kind, fn = fn, key = key, label = label, lname = name:lower(), ldesc = desc:lower() }
+end
+local function T(cat, name, desc, key) F(cat, name, desc, "toggle", nil, key) end
+local function A(cat, name, desc, fn, label) F(cat, name, desc, "action", fn, nil, label) end
+local function fam(cat, name, desc, from, to, step, fn, label)
+	local count = math.floor((to - from) / step + 1e-6)
+	for i = 0, count do
+		local v = from + i * step
+		local sv = n2s(math.floor(v * 1000 + 0.5) / 1000)
+		A(cat, name:format(sv), desc:format(sv), function() fn(v) end, label)
+	end
+end
+local function openB() showPage("Builder") end
+local function toolMode(m) B.mode = m B.active = true if builderRefresh then builderRefresh() end openB() end
+
+-- MOVEMENT ------------------------------------------------------------
+local MV = "MOVEMENT"
+T(MV, "Fly", "Free flight with camera-relative controls (Space / Ctrl, or the on-screen pad on mobile).", "fly")
+A(MV, "Fly Speed Boost x2", "Doubles the current fly speed (max 500).", function() S.flySpeed = math.min(S.flySpeed * 2, 500) setToggle("fly", true) end)
+T(MV, "Infinite Jump", "Jump again while airborne, as many times as you like.", "infjump")
+T(MV, "Double Jump", "One extra jump while in the air; resets on landing.", "doublejump")
+A(MV, "Super Jump", "Sets JumpPower to 150.", function() Core.setJP(150) end)
+A(MV, "Speed Boost", "Sets WalkSpeed to 100.", function() Core.setWS(100) end)
+A(MV, "WalkSpeed Reset", "Restores your original WalkSpeed.", function() Core.setWS(S.orig.ws) end)
+A(MV, "JumpPower Reset", "Restores your original JumpPower.", function() Core.setJP(S.orig.jp) end)
+T(MV, "Noclip", "Walk through walls and solid objects.", "noclip")
+T(MV, "Air Walk", "A glowing platform follows your feet; Space rises, Shift/Ctrl lowers.", "airwalk")
+T(MV, "Sprint", "Hold Left Shift to run faster (multiplier is configurable).", "sprint")
+T(MV, "Bunny Hop", "Automatically jumps while you move on the ground.", "bhop")
+A(MV, "Dash", "Burst forward in the direction you are facing.", function() Core.dash() end)
+A(MV, "Gravity: Moon", "Sets gravity to 32.", function() Core.setGravity(32) end)
+A(MV, "Gravity: Zero", "Sets gravity to 0.", function() Core.setGravity(0) end)
+A(MV, "Gravity: Heavy", "Sets gravity to 400.", function() Core.setGravity(400) end)
+A(MV, "Gravity: Default", "Restores the game's original gravity.", function() Core.setGravity(defaultGravity) end)
+A(MV, "Teleport To Spawn", "Teleports to the first SpawnLocation in the map.", function()
+	local s = Workspace:FindFirstChildWhichIsA("SpawnLocation", true)
+	if not s then fail("No SpawnLocation found in this game.") end
+	Core.tp(s.CFrame + Vector3.new(0, 4, 0))
 end)
+A(MV, "Teleport Back 50", "Moves you 50 studs backwards.", function() local r = root() if not r then fail("No character found.") end Core.tp(r.CFrame * CFrame.new(0, 0, 50)) end)
+fam(MV, "WalkSpeed Set %s", "Sets WalkSpeed to %s.", 16, 300, 4, Core.setWS)
+fam(MV, "JumpPower Set %s", "Sets JumpPower to %s.", 25, 400, 5, Core.setJP)
+fam(MV, "Gravity Set %s", "Sets workspace gravity to %s.", 0, 400, 5, Core.setGravity)
+fam(MV, "Fly Speed %s", "Enables fly at speed %s.", 10, 500, 10, function(v) S.flySpeed = v setToggle("fly", true) end)
+fam(MV, "Teleport Up %s Studs", "Teleports you %s studs straight up.", 10, 500, 10, function(v) local r = root() if not r then fail("No character found.") end Core.tp(r.CFrame + Vector3.new(0, v, 0)) end)
+fam(MV, "Teleport Forward %s Studs", "Teleports you %s studs forward.", 10, 300, 10, function(v) local r = root() if not r then fail("No character found.") end Core.tp(r.CFrame * CFrame.new(0, 0, -v)) end)
+fam(MV, "Dash Power %s", "Sets dash power to %s and dashes.", 20, 300, 5, function(v) S.dash = v Core.dash() end)
+fam(MV, "Hip Height %s", "Sets HipHeight to %s (R15 hover effect).", 0, 20, 0.5, Core.setHip)
+fam(MV, "Sprint Multiplier x%s", "Sets sprint multiplier to x%s and enables Sprint.", 1.1, 4, 0.1, function(v) S.sprintMult = v setToggle("sprint", true) end)
+for i = 1, 20 do
+	A(MV, "Save Waypoint " .. i, "Stores your current position in slot " .. i .. ".", function()
+		local r = root() if not r then fail("No character found.") end
+		S.waypoints[i] = r.CFrame
+	end, "SAVE")
+	A(MV, "Go To Waypoint " .. i, "Teleports to the position saved in slot " .. i .. ".", function()
+		if not S.waypoints[i] then fail("Slot " .. i .. " is empty - save a waypoint first.") end
+		Core.tp(S.waypoints[i])
+	end, "GO")
+end
 
-movementPage()
+-- PLAYER --------------------------------------------------------------
+local PL = "PLAYER"
+T(PL, "ESP Simulator", "Highlights every player through walls and shows name tags.", "esp")
+T(PL, "Player Highlight", "Glowing outline on every player (no name tags).", "highlight")
+A(PL, "Open Player List", "Opens the Players page with TP / View / Info / Bring buttons.", function() showPage("Players") end, "OPEN")
+A(PL, "Teleport To Random Player", "Teleports next to a random player.", function() Core.tpPlayer(Core.pick("random")) end)
+A(PL, "Teleport To Nearest Player", "Teleports next to the closest player.", function() Core.tpPlayer(Core.pick("nearest")) end)
+A(PL, "Teleport To Farthest Player", "Teleports next to the farthest player.", function() Core.tpPlayer(Core.pick("farthest")) end)
+A(PL, "Spectate Random Player", "Camera follows a random player.", function() Core.spectate(Core.pick("random")) end)
+A(PL, "Stop Spectating", "Returns the camera to your character.", function() setToggle("spectate", false) end, "STOP")
+A(PL, "Player Information: Me", "Shows your ID, account age, health and position.", function() Core.info(player) end, "SHOW")
+A(PL, "Player Count", "Shows how many players are in the server.", function() notify("Players", #Players:GetPlayers() .. " / " .. Players.MaxPlayers .. " in this server", "info") end, "SHOW")
+T(PL, "Invisible Character", "Hides your character locally.", "invisible")
+T(PL, "Neon Body", "Turns your body parts to Neon material.", "neon")
+A(PL, "Remove Accessories", "Removes all hats and accessories (local).", function() local h = hum() if not h then fail("No character found.") end h:RemoveAccessories() end)
+A(PL, "Reset Character", "Respawns your character.", function() Core.reset() end)
+fam(PL, "Body Color: %s", "Colors your whole body.", 0, 355, 5, nil)
+Features[#Features] = nil nameSet[("Body Color: %s"):format(n2s(355))] = nil -- (rebuilt below with hue names)
+for h = 0, 355, 5 do A(PL, "Body Color: " .. hueName(h) .. " " .. h .. "°", "Colors your whole body with hue " .. h .. "°.", function() Core.bodyHue(h) end) end
+for _, m in ipairs(MATS) do A(PL, "Body Material: " .. m, "Applies " .. m .. " material to your body.", function() Core.bodyMat(m) end) end
+for h = 0, 355, 5 do A(PL, "ESP Color: " .. hueName(h) .. " " .. h .. "°", "Sets ESP/Highlight color to hue " .. h .. "°.", function() S.espColor = hueColor(h) Core.espRefresh() end) end
+fam(PL, "ESP Fill Transparency %s", "Sets ESP fill transparency to %s.", 0, 1, 0.05, function(v) S.espFill = v Core.espRefresh() end)
 
-print("NEBULA HUB V6 LOADED")
+-- FE TOOLS ------------------------------------------------------------
+local FE = "FE TOOLS"
+A(FE, "Building Tools", "Opens the full building toolbox.", openB, "OPEN")
+A(FE, "Place Tool", "Click/tap the world to place parts at the grid.", function() toolMode("Place") end, "USE")
+A(FE, "Select Tool", "Click/tap a part to select it for editing.", function() toolMode("Select") end, "USE")
+A(FE, "Move Tool", "Click/tap a spot to move the selected part there.", function() toolMode("Move") end, "USE")
+A(FE, "Resize Tool", "Opens the resize controls for the selected part.", function() B.active = true openB() end, "OPEN")
+A(FE, "Rotate Tool", "Opens the rotate controls for the selected part.", function() B.active = true openB() end, "OPEN")
+A(FE, "Paint Tool", "Click/tap parts to paint them with the current color + material.", function() toolMode("Paint") end, "USE")
+A(FE, "Material Tool", "Click/tap parts to apply the current material (Paint tool).", function() toolMode("Paint") end, "USE")
+A(FE, "Delete Tool", "Click/tap parts to delete them (undoable).", function() toolMode("Delete") end, "USE")
+A(FE, "Copy Tool", "Click/tap parts to duplicate them.", function() toolMode("Copy") end, "USE")
+A(FE, "Undo", "Undoes the last build action.", function() Bld.undo() end)
+A(FE, "Redo", "Redoes the last undone build action.", function() Bld.redo() end)
+A(FE, "Part Spawner", "Spawns a part with the current settings in front of you.", function() Bld.spawn() end, "SPAWN")
+A(FE, "Model Creator", "Saves everything you built as a reusable model template.", function() Bld.saveTemplate() end, "SAVE")
+A(FE, "Spawn Saved Model", "Spawns the selected saved model in front of you.", function() Bld.spawnTemplate() end, "SPAWN")
+A(FE, "Object Editor", "Opens the object editor (name, transparency, anchored...).", openB, "OPEN")
+A(FE, "Duplicate Selected", "Duplicates the selected part.", function() Bld.duplicate() end)
+A(FE, "Delete Selected", "Deletes the selected part (undoable).", function() Bld.delete() end)
+A(FE, "Clear All Parts", "Removes every part you built (undoable).", function() Bld.clearAll() end)
+A(FE, "Grid Snap Off", "Disables grid snapping.", function() B.snapIdx = 1 end)
+fam(FE, "Spawn Cube %s", "Spawns a %s x %s x %s cube.", 1, 40, 1, function(v) Bld.spawn(Vector3.new(v, v, v)) end, "SPAWN")
+for i = #Features - 39, #Features do Features[i].desc = "Spawns a cube of the given size in front of you." Features[i].ldesc = Features[i].desc:lower() end
+for _, m in ipairs(MATS) do
+	for si, sh in ipairs(SHAPES) do
+		A(FE, "Spawn " .. m .. " " .. sh[1], "Spawns a " .. m .. " " .. sh[1]:lower() .. " in front of you.", function()
+			Bld.spawn(Vector3.new(4, 4, 4), { shape = si, mat = Enum.Material[m] })
+		end, "SPAWN")
+	end
+end
+for h = 0, 355, 5 do A(FE, "Build Color: " .. hueName(h) .. " " .. h .. "°", "Sets the builder color to hue " .. h .. "°.", function() B.hue = h B.color = hueColor(h) if builderRefresh then builderRefresh() end end, "SET") end
+for _, m in ipairs(MATS) do A(FE, "Build Material: " .. m, "Sets the builder material to " .. m .. ".", function() for i, n in ipairs(MATS) do if n == m then B.matIdx = i end end if builderRefresh then builderRefresh() end end, "SET") end
+for i, g in ipairs(SNAPS) do A(FE, "Grid Snap " .. n2s(g), g == 0 and "Disables grid snapping." or ("Snaps building to a " .. n2s(g) .. " stud grid."), function() B.snapIdx = i if builderRefresh then builderRefresh() end end, "SET") end
+fam(FE, "Move Step %s", "Sets the move/resize step to %s studs.", 1, 50, 1, function(v) B.step = v if builderRefresh then builderRefresh() end end, "SET")
+fam(FE, "Rotate Step %s°", "Sets the rotate step to %s degrees.", 5, 180, 5, function(v) B.rot = v if builderRefresh then builderRefresh() end end, "SET")
+for _, w in ipairs({ 4, 8, 12, 16, 20, 24, 32, 48 }) do
+	for _, hgt in ipairs({ 4, 8, 12, 16 }) do
+		A(FE, "Spawn Wall " .. w .. "x" .. hgt, "Spawns a " .. w .. " wide, " .. hgt .. " tall wall.", function() Bld.spawn(Vector3.new(w, hgt, 1)) end, "SPAWN")
+	end
+end
+fam(FE, "Spawn Platform %s", "Spawns a flat square platform.", 8, 64, 4, function(v) Bld.spawn(Vector3.new(v, 1, v)) end, "SPAWN")
+fam(FE, "Spawn Stairs %s Steps", "Builds a staircase in front of you.", 3, 30, 1, function(n)
+	group(function()
+		local origin = Bld.front(Vector3.new(8, 1, 2))
+		local r = root()
+		local base = r and CFrame.new(origin) * (r.CFrame - r.CFrame.Position) or CFrame.new(origin)
+		for i = 1, n do newPart(base * CFrame.new(0, i - 0.5, -(i * 2)), Vector3.new(8, 1, 2)) end
+	end)
+end, "BUILD")
+fam(FE, "Spawn Tower %s Blocks", "Stacks blocks into a tower.", 2, 20, 1, function(n)
+	group(function()
+		local origin = Bld.front(Vector3.new(4, 4, 4))
+		for i = 1, n do newPart(CFrame.new(origin + Vector3.new(0, (i - 1) * 4, 0)), Vector3.new(4, 4, 4)) end
+	end)
+end, "BUILD")
+
+-- FUN -----------------------------------------------------------------
+local FU = "FUN"
+A(FU, "Fling Simulator", "Launches YOUR character into the air with a spin.", function() Core.fling() end, "FLING")
+T(FU, "Ragdoll", "Makes your character go limp.", "ragdoll")
+T(FU, "Spin", "Spins your character continuously.", "spin")
+A(FU, "Sit", "Makes your character sit.", function() Core.sit() end)
+T(FU, "Freeze Animation", "Pauses your current animations.", "freezeanim")
+T(FU, "Freeze Character", "Anchors your character in place.", "freeze")
+A(FU, "Giant Mode", "Scales your character to 2.5x (R15).", function() Core.scale(2.5) end)
+A(FU, "Tiny Mode", "Scales your character to 0.4x (R15).", function() Core.scale(0.4) end)
+A(FU, "Normal Size", "Returns to normal size.", function() Core.scale(1) end)
+A(FU, "Funny Animation: Backflip", "Launches you into a backflip.", function() Core.backflip() end)
+local EMOTES = { "dance", "dance2", "dance3", "wave", "point", "cheer", "laugh", "salute", "shrug", "stadium", "tilt" }
+for _, e in ipairs(EMOTES) do A(FU, "Emote: " .. e:gsub("^%l", string.upper), "Plays the '" .. e .. "' emote.", function() Core.emote(e) end, "PLAY") end
+fam(FU, "Spin Speed %s", "Spins at %s degrees per frame.", 1, 60, 1, function(v) S.spin = v setToggle("spin", true) end)
+fam(FU, "Body Scale x%s", "Scales your character to x%s (R15).", 0.2, 6, 0.2, Core.scale)
+fam(FU, "Fling Power %s", "Sets fling power to %s and flings yourself.", 10, 300, 10, function(v) S.fling = v Core.fling() end, "FLING")
+fam(FU, "Animation Speed x%s", "Sets playing animations to x%s speed.", 0.25, 3, 0.25, Core.animSpeed)
+
+-- VISUAL --------------------------------------------------------------
+local VI = "VISUAL"
+T(VI, "Fullbright", "Removes darkness and shadows.", "fullbright")
+T(VI, "Blur", "Screen blur effect.", "blur")
+T(VI, "Bloom", "Glow effect on bright areas.", "bloom")
+T(VI, "Color Correction", "Saturation / contrast grading.", "cc")
+T(VI, "Camera Shake", "Subtle handheld camera shake.", "shake")
+T(VI, "First Person Lock", "Locks the camera to first person.", "firstperson")
+T(VI, "Global Shadows", "Toggle world shadows.", "shadows")
+A(VI, "Sky Changer: Sunset", "Sets a warm sunset sky.", function() Lighting.ClockTime = 18.2 Core.tint(25) end)
+A(VI, "Sky Changer: Midnight", "Sets a deep night sky.", function() Lighting.ClockTime = 0 Core.tint(250) end)
+A(VI, "Sky Changer: Noon", "Sets bright daylight.", function() Lighting.ClockTime = 12 Core.tint(200) end)
+A(VI, "Graphics: Reset Effects", "Removes all Nebula visual effects.", function()
+	for _, n in ipairs({ "NebulaV7_Blur", "NebulaV7_Bloom", "NebulaV7_CC", "NebulaV7_Atmo" }) do local o = Lighting:FindFirstChild(n) if o then o:Destroy() end end
+	Toggles.blur.on, Toggles.bloom.on, Toggles.cc.on = false, false, false
+end)
+fam(VI, "FOV Set %s", "Sets field of view to %s.", 30, 120, 2, Core.setFOV)
+fam(VI, "Time of Day %s h", "Sets the clock to %s hours.", 0, 24, 0.5, function(v) Lighting.ClockTime = v end)
+fam(VI, "Blur Size %s", "Enables blur with size %s.", 2, 60, 2, function(v) S.blur = v setToggle("blur", true) end)
+fam(VI, "Bloom Intensity %s", "Enables bloom with intensity %s.", 0.25, 5, 0.25, function(v) S.bloom = v setToggle("bloom", true) end)
+fam(VI, "Brightness %s", "Sets Lighting.Brightness to %s.", 1, 30, 1, function(v) Lighting.Brightness = v end)
+fam(VI, "Fog End %s", "Sets fog distance to %s studs.", 100, 2000, 50, function(v) Lighting.FogEnd = v end)
+fam(VI, "Exposure %s", "Sets exposure compensation to %s.", -3, 3, 0.25, function(v) Lighting.ExposureCompensation = v end)
+for h = 0, 354, 6 do A(VI, "Atmosphere Tint: " .. hueName(h) .. " " .. h .. "°", "Tints the sky/atmosphere with hue " .. h .. "°.", function() Core.tint(h) end) end
+fam(VI, "Saturation %s", "Color correction saturation %s.", -1, 2, 0.1, function(v) S.sat = v setToggle("cc", true) end)
+fam(VI, "Contrast %s", "Color correction contrast %s.", -0.5, 1.5, 0.1, function(v) S.contrast = v setToggle("cc", true) end)
+fam(VI, "Max Zoom Distance %s", "Lets the camera zoom out to %s studs.", 10, 400, 10, function(v) player.CameraMaxZoomDistance = v end)
+fam(VI, "Quality Level %s", "Requests graphics quality level %s.", 1, 10, 1, Core.quality)
+
+-- COMMANDS ------------------------------------------------------------
+local defaults = { fly = "fly 80", speed = "speed 100", jump = "jump 120", gravity = "gravity 50", fov = "fov 100", tp = "tp 0 50 0", time = "time 14", blur = "blur 12", bloom = "bloom 2", dance = "dance 1", emote = "emote wave", color = "color a855f7", quality = "quality 5", scale = "scale 1", theme = "theme cyan", spawn = "spawn 4", snap = "snap 1", hipheight = "hipheight 4", spin = "spin 15", exec = 'exec print("Hello from NEBULA")' }
+local skip = { goto = true, bring = true, spectate = true }
+for _, c in ipairs(CmdList) do
+	if not skip[c.name] then
+		local line = defaults[c.name] or c.name
+		A("COMMANDS", "Command: " .. c.name, c.usage .. "  -  " .. c.desc, function()
+			local ok, res = runCommand(line)
+			if not ok then fail(res) end
+			log("> " .. line, "info")
+			if res then log(res, "ok") end
+		end, "RUN")
+	end
+end
+
+-- EXECUTOR ------------------------------------------------------------
+local EX = "EXECUTOR"
+A(EX, "Fake Script Editor", "Opens the script editor page.", function() showPage("Editor") end, "OPEN")
+A(EX, "Fake Execute Button", "Executes the script currently in the editor.", function() Core.execute() end, "EXEC")
+A(EX, "Script Library", "Browse the built-in script library.", function() showPage("LIST", "LIBRARY") end, "OPEN")
+A(EX, "Script History", "Opens the editor with your execution history.", function() showPage("Editor") end, "OPEN")
+A(EX, "Fake Console", "Opens the console page.", function() showPage("Console") end, "OPEN")
+A(EX, "Fake Output Window", "Toggles the floating output window.", function() Core.toggleMini() end, "TOGGLE")
+A(EX, "Fake Executor Status", "Shows the current injection status.", function() notify("Executor", Core.isInjected() and "Injected - ready to execute" or "Not injected yet", "info") end, "SHOW")
+A(EX, "Fake Script Injection Animation", "Plays the injection sequence.", function() playInjection() end, "PLAY")
+A(EX, "Executor Branding Splash", "Shows your brand splash screen (set the name in Settings).", function() Core.splash() end, "SHOW")
+A(EX, "Clear Console", "Clears all console output.", function() table.clear(Logs) if Core.clearConsole then Core.clearConsole() end end, "CLEAR")
+A(EX, "Clear Editor", "Empties the script editor.", function() if Core.setEditor then Core.setEditor("") end end, "CLEAR")
+A(EX, "Load Example Script", "Loads a starter script into the editor.", function() loadIntoEditor('print("NEBULA HUB V7 ready")\nfly 80\nspeed 60\nfov 95') end, "LOAD")
+fam(EX, "Console Font Size %s", "Sets console text size to %s.", 10, 24, 1, function(v) Settings.consoleSize = v if Core.applyUI then Core.applyUI() end end, "SET")
+fam(EX, "Editor Font Size %s", "Sets editor text size to %s.", 10, 24, 1, function(v) Settings.editorSize = v if Core.applyUI then Core.applyUI() end end, "SET")
+fam(EX, "Notification Duration %ss", "Notifications stay %s seconds.", 1, 10, 1, function(v) Settings.notifyTime = v end, "SET")
+
+-- LIBRARY (script presets that load into the editor) -------------------
+local ADJ = { "Mini", "Basic", "Smooth", "Turbo", "Ultra", "Hyper", "Mega", "Cosmic", "Astral", "Quantum", "Eternal", "Supreme" }
+local NOUN = {
+	Flight = function(p) return ("print(\"Flight p%d\")\nfly %d"):format(p, 40 + p * 12) end,
+	Runner = function(p) return ("print(\"Runner p%d\")\nspeed %d"):format(p, 20 + p * 14) end,
+	Leaper = function(p) return ("print(\"Leaper p%d\")\njump %d\ninfinitejump"):format(p, 60 + p * 15) end,
+	Ghost = function(p) return ("print(\"Ghost p%d\")\nnoclip\nspeed %d"):format(p, 20 + p * 8) end,
+	Gravity = function(p) return ("print(\"Gravity p%d\")\ngravity %d"):format(p, math.max(0, 210 - p * 16)) end,
+	Vision = function(p) return ("print(\"Vision p%d\")\nfullbright\nfov %d"):format(p, 70 + p * 4) end,
+	Dasher = function(p) return ("print(\"Dasher p%d\")\nsprint\ndash"):format(p) end,
+	Spinner = function(p) return ("print(\"Spinner p%d\")\nspin %d"):format(p, 2 + p * 4) end,
+	Titan = function(p) return ("print(\"Titan p%d\")\ngiant\nspeed %d"):format(p, 24 + p * 6) end,
+	Pixie = function(p) return ("print(\"Pixie p%d\")\ntiny\nfly %d"):format(p, 30 + p * 6) end,
+}
+local NOUN_ORDER = { "Flight", "Runner", "Leaper", "Ghost", "Gravity", "Vision", "Dasher", "Spinner", "Titan", "Pixie" }
+for pi, adj in ipairs(ADJ) do
+	for _, noun in ipairs(NOUN_ORDER) do
+		local src = NOUN[noun](pi)
+		A("LIBRARY", adj .. " " .. noun .. " Script", "Loads the " .. adj .. " " .. noun .. " preset into the editor.", function() loadIntoEditor(src) end, "LOAD")
+	end
+end
+
+local CATS = { "MOVEMENT", "PLAYER", "FE TOOLS", "FUN", "COMMANDS", "VISUAL", "EXECUTOR", "LIBRARY" }
+local catCount = {}
+for _, f in ipairs(Features) do catCount[f.cat] = (catCount[f.cat] or 0) + 1 end
+log("Feature library built: " .. #Features .. " unique features.", "ok")
+
+----------------------------------------------------------------------
+-- MAIN WINDOW
+----------------------------------------------------------------------
+local vp = (cam() and cam().ViewportSize) or Vector2.new(1280, 720)
+local winW, winH = math.min(780, vp.X - 24), math.min(500, vp.Y - 24)
+local MINW, MINH = 520, 340
+local SIDE = 150
+
+local main = mk("Frame", {
+	Name = "Main", Size = UDim2.fromOffset(winW, winH), Position = UDim2.new(0.5, -winW / 2, 0.5, -winH / 2),
+	BackgroundColor3 = Theme.bg, BackgroundTransparency = Settings.transparency, BorderSizePixel = 0,
+	ClipsDescendants = true, Active = true, Visible = false,
+}, gui)
+corner(main, 14)
+local mainStroke = stroke(main, Theme.accent, 2, 0.15)
+bindAccent(mainStroke, "Color")
+local uiScale = mk("UIScale", { Scale = Settings.scale }, main)
+
+-- animated background
+local orbTweens = {}
+do
+	local bg = mk("Frame", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ClipsDescendants = true, ZIndex = 1 }, main)
+	for i = 1, 6 do
+		local sz = 120 + (i * 37) % 120
+		local orb = mk("Frame", { Size = UDim2.fromOffset(sz, sz), Position = UDim2.new((i * 0.17) % 1, 0, (i * 0.29) % 1, 0), BackgroundTransparency = 0.9, BorderSizePixel = 0, ZIndex = 1 }, bg)
+		corner(orb, sz)
+		bindAccent(orb, "BackgroundColor3")
+		local tr = TweenService:Create(orb, TweenInfo.new(6 + i * 1.3, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), { Position = UDim2.new(((i * 0.17) + 0.45) % 1, 0, ((i * 0.29) + 0.4) % 1, 0) })
+		orbTweens[#orbTweens + 1] = tr
+	end
+	local grad = mk("UIGradient", { Color = ColorSequence.new({ ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)), ColorSequenceKeypoint.new(0.5, Color3.fromRGB(120, 60, 200)), ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 255, 255)) }) }, mainStroke)
+	orbTweens[#orbTweens + 1] = TweenService:Create(grad, TweenInfo.new(5, Enum.EasingStyle.Linear, Enum.EasingDirection.In, -1), { Rotation = 360 })
+end
+local function applyAnim()
+	for _, t in ipairs(orbTweens) do
+		if Settings.anim then t:Play() else t:Pause() end
+	end
+end
+
+-- top bar
+local top = mk("Frame", { Size = UDim2.new(1, 0, 0, 42), BackgroundColor3 = Theme.panel, BackgroundTransparency = 0.2, BorderSizePixel = 0, ZIndex = 5 }, main)
+local title = lbl(top, "NEBULA HUB V7", UDim2.new(0, 220, 1, 0), UDim2.new(0, 16, 0, 0), { font = Enum.Font.GothamBlack, ts = 18 })
+title.ZIndex = 6
+mk("UIGradient", { Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(190, 120, 255)) }, title)
+local sub = lbl(top, "EXECUTOR SIMULATOR", UDim2.new(0, 150, 1, 0), UDim2.new(0, 178, 0, 2), { color = Theme.sub, ts = 10, font = Enum.Font.GothamMedium })
+sub.ZIndex = 6
+local statusPill = lbl(top, "● NOT INJECTED", UDim2.new(0, 130, 0, 22), UDim2.new(1, -250, 0.5, -11), { ts = 10, font = Enum.Font.GothamBold, ax = Enum.TextXAlignment.Center, color = Theme.bad })
+statusPill.ZIndex = 6 statusPill.BackgroundTransparency = 0.8 statusPill.BackgroundColor3 = Theme.bad corner(statusPill, 11)
+local injected = false
+setStatus = function()
+	statusPill.Text = injected and "● INJECTED" or "● NOT INJECTED"
+	statusPill.TextColor3 = injected and Theme.good or Theme.bad
+	statusPill.BackgroundColor3 = injected and Theme.good or Theme.bad
+end
+function Core.isInjected() return injected end
+
+local body = mk("Frame", { Size = UDim2.new(1, 0, 1, -42), Position = UDim2.new(0, 0, 0, 42), BackgroundTransparency = 1, ZIndex = 2 }, main)
+local minimized = false
+local minBtn = btn(top, "–", UDim2.fromOffset(30, 26), UDim2.new(1, -72, 0.5, -13), function()
+	minimized = not minimized
+	if minimized then
+		body.Visible = false
+		tw(main, 0.25, { Size = UDim2.fromOffset(winW, 42) })
+	else
+		tw(main, 0.25, { Size = UDim2.fromOffset(winW, winH) })
+		task.delay(Settings.anim and 0.2 or 0, function() if not minimized then body.Visible = true end end)
+	end
+end)
+minBtn.ZIndex = 6
+local closeArmed = false
+local closeBtn
+closeBtn = btn(top, "×", UDim2.fromOffset(30, 26), UDim2.new(1, -38, 0.5, -13), function()
+	if not closeArmed then
+		closeArmed = true
+		closeBtn.Text = "?"
+		setBase(closeBtn, Theme.bad)
+		notify("Close NEBULA HUB", "Press × again within 3 seconds to close and clean up.", "warn")
+		task.delay(3, function()
+			if closeBtn.Parent then closeArmed = false closeBtn.Text = "×" setBase(closeBtn, Theme.panel2) end
+		end)
+	else
+		Core.shutdown()
+	end
+end)
+closeBtn.ZIndex = 6
+
+-- sidebar
+local side = mk("ScrollingFrame", { Size = UDim2.new(0, SIDE, 1, -50), Position = UDim2.new(0, 8, 0, 8), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 2, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ZIndex = 3 }, body)
+mk("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, side)
+local content = mk("Frame", { Size = UDim2.new(1, -SIDE - 24, 1, -58), Position = UDim2.new(0, SIDE + 16, 0, 8), BackgroundTransparency = 1, ZIndex = 3 }, body)
+local pages = {}
+local function newPage(name)
+	local p = mk("Frame", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Visible = false, Name = name }, content)
+	pages[name] = p
+	return p
+end
+
+-- ===== LIST PAGE =====
+local listPage = newPage("LIST")
+local PAGE_SIZE = 25
+local filtered, rows, curCat, curPage = {}, {}, "ALL", 1
+local searchBox = mk("TextBox", { Size = UDim2.new(1, 0, 0, 32), BackgroundColor3 = Theme.panel, TextColor3 = Theme.text, PlaceholderText = "🔍  Search 1000+ features...", PlaceholderColor3 = Theme.sub, Text = "", Font = Enum.Font.Gotham, TextSize = 14, ClearTextOnFocus = false, TextXAlignment = Enum.TextXAlignment.Left, BorderSizePixel = 0 }, listPage)
+corner(searchBox, 8) stroke(searchBox, Theme.accent, 1, 0.6) mk("UIPadding", { PaddingLeft = UDim.new(0, 12) }, searchBox)
+local listScroll = mk("ScrollingFrame", { Size = UDim2.new(1, 0, 1, -76), Position = UDim2.new(0, 0, 0, 40), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y }, listPage)
+bindAccent(listScroll, "ScrollBarImageColor3")
+mk("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, listScroll)
+local pagerLbl = lbl(listPage, "", UDim2.new(1, -150, 0, 28), UDim2.new(0, 75, 1, -30), { ax = Enum.TextXAlignment.Center, color = Theme.sub, ts = 12 })
+
+local function activate(f)
+	if f.kind == "toggle" then
+		setToggle(f.key)
+	else
+		local ok, err = pcall(f.fn)
+		if ok then
+			notify(f.name, f.cat == "LIBRARY" and "Loaded into the editor" or "Done", "ok")
+			log("✔ " .. f.name, "ok")
+		else
+			notify(f.name, cleanErr(err), "error")
+			log("[" .. f.name .. "] " .. cleanErr(err), "error")
+		end
+		refreshList()
+	end
+end
+for i = 1, PAGE_SIZE do
+	local row = mk("Frame", { Size = UDim2.new(1, -8, 0, 52), BackgroundColor3 = Theme.panel, BackgroundTransparency = 0.1, BorderSizePixel = 0, LayoutOrder = i }, listScroll)
+	corner(row, 10)
+	local nm = lbl(row, "", UDim2.new(1, -110, 0, 20), UDim2.new(0, 12, 0, 6), { font = Enum.Font.GothamBold, ts = 14, trunc = true })
+	local ds = lbl(row, "", UDim2.new(1, -110, 0, 18), UDim2.new(0, 12, 0, 27), { color = Theme.sub, ts = 11, trunc = true })
+	local entry = {}
+	entry.b = btn(row, "RUN", UDim2.fromOffset(78, 30), UDim2.new(1, -88, 0.5, -15), function() if entry.feat then activate(entry.feat) end end)
+	entry.row, entry.nm, entry.ds = row, nm, ds
+	rows[i] = entry
+end
+local function refreshRows()
+	local total = #filtered
+	local pagesN = math.max(1, math.ceil(total / PAGE_SIZE))
+	curPage = math.clamp(curPage, 1, pagesN)
+	for i = 1, PAGE_SIZE do
+		local f = filtered[(curPage - 1) * PAGE_SIZE + i]
+		local r = rows[i]
+		r.feat = f
+		r.row.Visible = f ~= nil
+		if f then
+			r.nm.Text = f.name
+			r.ds.Text = (curCat == "ALL" and ("[" .. f.cat .. "]  ") or "") .. f.desc
+			if f.kind == "toggle" then
+				local on = Toggles[f.key].on
+				r.b.Text = on and "ON" or "OFF"
+				r.b:SetAttribute("Base", on and Theme.accent or Theme.panel2)
+				r.b.BackgroundColor3 = on and Theme.accent or Theme.panel2
+			else
+				r.b.Text = f.label or "RUN"
+				r.b:SetAttribute("Base", Theme.panel2)
+				r.b.BackgroundColor3 = Theme.panel2
+			end
+		end
+	end
+	pagerLbl.Text = string.format("Page %d / %d   •   %d features", curPage, pagesN, total)
+end
+refreshList = refreshRows
+local function applyFilter()
+	table.clear(filtered)
+	local q = searchBox.Text:lower()
+	for _, f in ipairs(Features) do
+		if (curCat == "ALL" or f.cat == curCat) and (q == "" or f.lname:find(q, 1, true) or f.ldesc:find(q, 1, true)) then
+			filtered[#filtered + 1] = f
+		end
+	end
+	curPage = 1
+	listScroll.CanvasPosition = Vector2.zero
+	refreshRows()
+end
+searchBox:GetPropertyChangedSignal("Text"):Connect(applyFilter)
+btn(listPage, "◀", UDim2.fromOffset(66, 28), UDim2.new(0, 0, 1, -30), function() curPage -= 1 listScroll.CanvasPosition = Vector2.zero refreshRows() end)
+btn(listPage, "▶", UDim2.fromOffset(66, 28), UDim2.new(1, -66, 1, -30), function() curPage += 1 listScroll.CanvasPosition = Vector2.zero refreshRows() end)
+
+-- ===== EDITOR PAGE =====
+local edPage = newPage("Editor")
+local editor = mk("TextBox", {
+	Size = UDim2.new(0.64, -4, 1, -76), Position = UDim2.new(0, 0, 0, 40), BackgroundColor3 = Color3.fromRGB(12, 9, 22), TextColor3 = Color3.fromRGB(220, 205, 255),
+	Font = Enum.Font.Code, TextSize = Settings.editorSize, MultiLine = true, ClearTextOnFocus = false, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+	Text = 'print("Welcome to NEBULA HUB V7")\n-- lines are simulator commands:\nfly 80\nspeed 60\nfov 95', BorderSizePixel = 0, PlaceholderText = "-- write simulator commands here", TextWrapped = false, ClipsDescendants = true,
+}, edPage)
+corner(editor, 8) stroke(editor, Theme.accent, 1, 0.6) mk("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingTop = UDim.new(0, 8) }, editor)
+local edStatus = lbl(edPage, "Ready.", UDim2.new(0.64, -4, 0, 28), UDim2.new(0, 0, 1, -30), { color = Theme.sub, ts = 12 })
+local histScroll = mk("ScrollingFrame", { Size = UDim2.new(0.36, -4, 1, -40), Position = UDim2.new(0.64, 4, 0, 40), BackgroundColor3 = Theme.panel, BackgroundTransparency = 0.2, BorderSizePixel = 0, ScrollBarThickness = 3, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y }, edPage)
+corner(histScroll, 8)
+mk("UIListLayout", { Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder }, histScroll)
+mk("UIPadding", { PaddingTop = UDim.new(0, 6), PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 6) }, histScroll)
+local History = {}
+local function rebuildHistory()
+	for _, c in ipairs(histScroll:GetChildren()) do if c:IsA("TextButton") or c:IsA("TextLabel") then c:Destroy() end end
+	local h = lbl(histScroll, "SCRIPT HISTORY", UDim2.new(1, 0, 0, 18), nil, { font = Enum.Font.GothamBold, ts = 10 })
+	bindAccent(h, "TextColor3") h.LayoutOrder = 0
+	if #History == 0 then
+		local e = lbl(histScroll, "Nothing executed yet.", UDim2.new(1, 0, 0, 18), nil, { color = Theme.sub, ts = 11 })
+		e.LayoutOrder = 1
+	end
+	for i, e in ipairs(History) do
+		local first = e.src:match("[^\r\n]+") or "(empty)"
+		local b = btn(histScroll, e.t .. "  " .. first:sub(1, 28), UDim2.new(1, 0, 0, 26), nil, function() editor.Text = e.src edStatus.Text = "Loaded from history." end, { ts = 11 })
+		b.TextXAlignment = Enum.TextXAlignment.Left b.TextTruncate = Enum.TextTruncate.AtEnd b.LayoutOrder = i + 1
+		mk("UIPadding", { PaddingLeft = UDim.new(0, 8) }, b)
+	end
+end
+local function addHistory(src)
+	if History[1] and History[1].src == src then return end
+	table.insert(History, 1, { t = os.date("%H:%M:%S"), src = src })
+	if #History > 40 then table.remove(History) end
+	rebuildHistory()
+end
+rebuildHistory()
+
+-- injection / splash overlay
+local overlay = mk("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.fromRGB(6, 4, 12), BackgroundTransparency = 0.05, Visible = false, ZIndex = 60, Active = true }, main)
+local ovTitle = lbl(overlay, "", UDim2.new(1, 0, 0, 40), UDim2.new(0, 0, 0.5, -70), { font = Enum.Font.GothamBlack, ts = 28, ax = Enum.TextXAlignment.Center })
+ovTitle.ZIndex = 61
+mk("UIGradient", { Color = ColorSequence.new(Color3.new(1, 1, 1), Color3.fromRGB(190, 120, 255)) }, ovTitle)
+local ovMsg = lbl(overlay, "", UDim2.new(1, 0, 0, 20), UDim2.new(0, 0, 0.5, -20), { color = Theme.sub, ts = 13, ax = Enum.TextXAlignment.Center })
+ovMsg.ZIndex = 61
+local ovBar = mk("Frame", { Size = UDim2.new(0, 280, 0, 6), AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0.5, 14), BackgroundColor3 = Theme.panel2, BorderSizePixel = 0, ZIndex = 61 }, overlay)
+corner(ovBar, 3)
+local ovFill = mk("Frame", { Size = UDim2.new(0, 0, 1, 0), BorderSizePixel = 0, ZIndex = 62 }, ovBar)
+corner(ovFill, 3) bindAccent(ovFill, "BackgroundColor3")
+local busy = false
+playInjection = function(cb)
+	if busy then return end
+	busy = true
+	task.spawn(function()
+		overlay.Visible = true
+		ovTitle.Text = "INJECTING"
+		ovFill.Size = UDim2.new(0, 0, 1, 0)
+		local stages = { "Initializing runtime...", "Linking virtual environment...", "Loading simulator API surface...", "Handshake with NEBULA core...", "Finalizing..." }
+		for i, s in ipairs(stages) do
+			ovMsg.Text = s
+			tw(ovFill, 0.35, { Size = UDim2.new(i / #stages, 0, 1, 0) })
+			task.wait(Settings.anim and 0.38 or 0.05)
+		end
+		injected = true setStatus()
+		ovMsg.Text = "Injected successfully"
+		task.wait(Settings.anim and 0.35 or 0.05)
+		overlay.Visible = false
+		busy = false
+		notify("Executor", "Injection complete (simulated).", "ok")
+		log("Injection complete.", "ok")
+		if cb then cb() end
+	end)
+end
+function Core.splash()
+	if busy then return end
+	busy = true
+	task.spawn(function()
+		overlay.Visible = true
+		ovTitle.Text = string.upper(Settings.brand) .. " EXECUTOR"
+		ovMsg.Text = "Simulator build " .. VERSION_STR
+		ovFill.Size = UDim2.new(0, 0, 1, 0)
+		tw(ovFill, 1.2, { Size = UDim2.new(1, 0, 1, 0) })
+		task.wait(Settings.anim and 1.5 or 0.2)
+		overlay.Visible = false
+		busy = false
+	end)
+end
+
+function Core.execute(src)
+	src = src or editor.Text
+	if src:match("^%s*$") then notify("Executor", "The script is empty.", "warn") return end
+	local function go()
+		addHistory(src)
+		log("▶ Executing script (" .. #src .. " chars)...", "info")
+		edStatus.Text = "Executed at " .. os.date("%H:%M:%S")
+		task.spawn(function()
+			local ok, e = pcall(runSim, src)
+			if ok then log("✔ Script finished.", "ok") notify("Executor", "Script executed (simulated).", "ok")
+			else log(cleanErr(e), "error") end
+		end)
+	end
+	if injected then go() else playInjection(go) end
+end
+function Core.setEditor(t) editor.Text = t end
+loadIntoEditor = function(src)
+	editor.Text = src
+	edStatus.Text = "Loaded preset - press Execute."
+	showPage("Editor")
+end
+do
+	local tb = mk("Frame", { Size = UDim2.new(1, 0, 0, 32), BackgroundTransparency = 1 }, edPage)
+	local items = {
+		{ "▶ Execute", function() Core.execute() end, true }, { "Inject", function() playInjection() end }, { "Clear", function() editor.Text = "" end },
+		{ "Save", function() addHistory(editor.Text) notify("Editor", "Saved to history.", "ok") end }, { "Console", function() showPage("Console") end },
+	}
+	for i, it in ipairs(items) do
+		btn(tb, it[1], UDim2.new(1 / #items, -4, 1, 0), UDim2.new((i - 1) / #items, 2, 0, 0), it[2], { accent = it[3] })
+	end
+end
+
+-- ===== CONSOLE PAGE =====
+local conPage = newPage("Console")
+local conScroll = mk("ScrollingFrame", { Size = UDim2.new(1, 0, 1, -40), Position = UDim2.new(0, 0, 0, 40), BackgroundColor3 = Color3.fromRGB(10, 8, 18), BorderSizePixel = 0, ScrollBarThickness = 4, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y }, conPage)
+corner(conScroll, 8) stroke(conScroll, Theme.accent, 1, 0.7)
+mk("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, conScroll)
+mk("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingTop = UDim.new(0, 6), PaddingRight = UDim.new(0, 8) }, conScroll)
+local conCount = 0
+consoleAdd = function(e)
+	conCount += 1
+	local l = mk("TextLabel", {
+		BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 16), AutomaticSize = Enum.AutomaticSize.Y, TextWrapped = true, RichText = true,
+		Font = Enum.Font.Code, TextSize = Settings.consoleSize, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+		TextColor3 = Theme.text, LayoutOrder = conCount, Name = "Log",
+		Text = ('<font color="#8b7fb0">[%s]</font> <font color="%s">%s</font>'):format(e.t, LOGCOL[e.k] or LOGCOL.info, esc(e.m)),
+	}, conScroll)
+	local kids = {}
+	for _, c in ipairs(conScroll:GetChildren()) do if c.Name == "Log" then kids[#kids + 1] = c end end
+	if #kids > 250 then kids[1]:Destroy() end
+	task.defer(function() conScroll.CanvasPosition = Vector2.new(0, 1e6) end)
+end
+function Core.clearConsole()
+	for _, c in ipairs(conScroll:GetChildren()) do if c.Name == "Log" then c:Destroy() end end
+end
+do
+	local tb = mk("Frame", { Size = UDim2.new(1, 0, 0, 32), BackgroundTransparency = 1 }, conPage)
+	local items = { { "Clear", function() table.clear(Logs) Core.clearConsole() end }, { "Output Window", function() Core.toggleMini() end }, { "Help", function() runCommand("help") end } }
+	for i, it in ipairs(items) do btn(tb, it[1], UDim2.new(1 / #items, -4, 1, 0), UDim2.new((i - 1) / #items, 2, 0, 0), it[2]) end
+end
+
+-- floating mini output
+local mini = mk("Frame", { Size = UDim2.fromOffset(330, 118), Position = UDim2.new(0, 12, 1, -130), BackgroundColor3 = Theme.bg, BackgroundTransparency = 0.15, BorderSizePixel = 0, Visible = false, ZIndex = 150, Active = true }, gui)
+corner(mini, 10) stroke(mini, Theme.accent, 1, 0.3)
+local miniHead = lbl(mini, "OUTPUT", UDim2.new(1, -12, 0, 18), UDim2.new(0, 10, 0, 4), { font = Enum.Font.GothamBold, ts = 10 })
+bindAccent(miniHead, "TextColor3") miniHead.ZIndex = 151
+local miniTxt = mk("TextLabel", { BackgroundTransparency = 1, Size = UDim2.new(1, -16, 1, -26), Position = UDim2.new(0, 10, 0, 22), Font = Enum.Font.Code, TextSize = 11, TextColor3 = Theme.text, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Bottom, RichText = true, TextWrapped = true, ZIndex = 151, Text = "" }, mini)
+miniRefresh = function()
+	if not mini.Visible then return end
+	local out = {}
+	for i = math.max(1, #Logs - 5), #Logs do
+		out[#out + 1] = ('<font color="%s">%s</font>'):format(LOGCOL[Logs[i].k] or LOGCOL.info, esc(Logs[i].m:sub(1, 60)))
+	end
+	miniTxt.Text = table.concat(out, "\n")
+end
+function Core.toggleMini() mini.Visible = not mini.Visible miniRefresh() end
+
+-- ===== PLAYERS PAGE =====
+local plPage = newPage("Players")
+local plScroll = listFrame(plPage)
+local function rebuildPlayers()
+	for _, c in ipairs(plScroll:GetChildren()) do if c:IsA("Frame") then c:Destroy() end end
+	LO = 0
+	local list = Players:GetPlayers()
+	for _, p in ipairs(list) do
+		if p ~= player then
+			local r = rowFrame(plScroll, 44)
+			lbl(r, p.DisplayName .. "  (@" .. p.Name .. ")", UDim2.new(1, -250, 1, 0), UDim2.new(0, 10, 0, 0), { font = Enum.Font.GothamMedium, trunc = true })
+			local function act(f) return function() local ok, e = pcall(f, p) if not ok then notify(p.Name, cleanErr(e), "error") end end end
+			btn(r, "TP", UDim2.fromOffset(46, 28), UDim2.new(1, -236, 0.5, -14), act(Core.tpPlayer))
+			btn(r, "View", UDim2.fromOffset(50, 28), UDim2.new(1, -186, 0.5, -14), act(Core.spectate))
+			btn(r, "Info", UDim2.fromOffset(46, 28), UDim2.new(1, -132, 0.5, -14), act(Core.info))
+			btn(r, "Bring", UDim2.fromOffset(52, 28), UDim2.new(1, -82, 0.5, -14), act(Core.bring))
+		end
+	end
+	local me = rowFrame(plScroll, 44)
+	lbl(me, "You: " .. player.DisplayName .. "  (@" .. player.Name .. ")", UDim2.new(1, -120, 1, 0), UDim2.new(0, 10, 0, 0), { font = Enum.Font.GothamBold, color = Theme.accent })
+	btn(me, "Info", UDim2.fromOffset(60, 28), UDim2.new(1, -70, 0.5, -14), function() Core.info(player) end)
+	if #list <= 1 then
+		local e = rowFrame(plScroll, 34)
+		lbl(e, "No other players are in the server right now.", UDim2.new(1, -20, 1, 0), UDim2.new(0, 10, 0, 0), { color = Theme.sub })
+	end
+end
+track(Players.PlayerAdded:Connect(function() task.wait(0.2) rebuildPlayers() end))
+track(Players.PlayerRemoving:Connect(function(p)
+	if S.specTarget == p then S.specTarget = nil if Toggles.spectate.on then setToggle("spectate", false) end end
+	task.defer(rebuildPlayers)
+end))
+
+-- ===== BUILDER PAGE =====
+local bdPage = newPage("Builder")
+local bdScroll = listFrame(bdPage)
+local bUpd, modeBtns = {}, {}
+local function safe(f)
+	return function(...)
+		local ok, e = pcall(f, ...)
+		if not ok then notify("Builder", cleanErr(e), "error") end
+		builderRefresh()
+	end
+end
+local function bStep(text, get, dec, inc) bUpd[#bUpd + 1] = stepper(bdScroll, text, get, safe(dec), safe(inc)) end
+local function bToggle(text, get, set) bUpd[#bUpd + 1] = toggleRow(bdScroll, text, get, safe(set)) end
+local axes = { X = Vector3.xAxis, Y = Vector3.yAxis, Z = Vector3.zAxis }
+local function axisRow(name, f)
+	local items = {}
+	for _, a in ipairs({ "X", "Y", "Z" }) do
+		items[#items + 1] = { name .. " " .. a .. "−", safe(function() f(axes[a], -1) end) }
+		items[#items + 1] = { name .. " " .. a .. "+", safe(function() f(axes[a], 1) end) }
+	end
+	rowOf(bdScroll, items)
+end
+local selLbl
+section(bdScroll, "Tools")
+do
+	local items = {}
+	for _, m in ipairs({ "Place", "Select", "Move", "Paint", "Delete", "Copy" }) do
+		items[#items + 1] = { m, function() B.mode = m B.active = true builderRefresh() end }
+	end
+	local _, btns = rowOf(bdScroll, items)
+	for i, m in ipairs({ "Place", "Select", "Move", "Paint", "Delete", "Copy" }) do modeBtns[m] = btns[i] end
+end
+bToggle("Click / tap the world to build", function() return B.active end, function(v) B.active = v end)
+section(bdScroll, "New part")
+bStep("Shape", function() return SHAPES[B.shapeIdx][1] end, function() B.shapeIdx = (B.shapeIdx - 2) % #SHAPES + 1 end, function() B.shapeIdx = B.shapeIdx % #SHAPES + 1 end)
+bStep("Material", function() return MATS[B.matIdx] end, function() B.matIdx = (B.matIdx - 2) % #MATS + 1 end, function() B.matIdx = B.matIdx % #MATS + 1 end)
+for _, a in ipairs({ "X", "Y", "Z" }) do
+	local prop = a
+	bStep("Size " .. a, function() return B.size[prop] end,
+		function() local s = { X = B.size.X, Y = B.size.Y, Z = B.size.Z } s[prop] = math.max(1, s[prop] - 1) B.size = Vector3.new(s.X, s.Y, s.Z) end,
+		function() local s = { X = B.size.X, Y = B.size.Y, Z = B.size.Z } s[prop] = math.min(64, s[prop] + 1) B.size = Vector3.new(s.X, s.Y, s.Z) end)
+end
+bStep("Color hue", function() return hueName(B.hue) .. " " .. B.hue .. "°" end, function() B.hue = (B.hue - 10) % 360 B.color = hueColor(B.hue) end, function() B.hue = (B.hue + 10) % 360 B.color = hueColor(B.hue) end)
+do
+	local r = mk("Frame", { Size = UDim2.new(1, -8, 0, 30), BackgroundTransparency = 1, LayoutOrder = nextLO() }, bdScroll)
+	local pal = { 0, 25, 50, 120, 170, 200, 230, 270, 300, 330 }
+	for i, h in ipairs(pal) do
+		local b = mk("TextButton", { Text = "", Size = UDim2.new(1 / #pal, -4, 1, 0), Position = UDim2.new((i - 1) / #pal, 2, 0, 0), BackgroundColor3 = hueColor(h), BorderSizePixel = 0, AutoButtonColor = true }, r)
+		corner(b, 6)
+		b.Activated:Connect(function() B.hue = h B.color = hueColor(h) builderRefresh() end)
+	end
+	mk("TextButton", { Text = "", Size = UDim2.new(0, 0, 0, 0), BackgroundTransparency = 1 }, r):Destroy()
+end
+rowOf(bdScroll, { { "Spawn Part", safe(function() Bld.spawn() end) }, { "Apply Style to Selected", safe(function() Bld.paint() end) } })
+section(bdScroll, "Selected part")
+selLbl = lbl(bdScroll, "Nothing selected", UDim2.new(1, -8, 0, 22), nil, { color = Theme.sub, ts = 12 })
+selLbl.LayoutOrder = nextLO()
+axisRow("Move", Bld.move)
+axisRow("Size", Bld.resize)
+axisRow("Rot", Bld.rotate)
+bStep("Move / resize step", function() return B.step .. " studs" end, function() B.step = math.max(1, B.step - 1) end, function() B.step = math.min(50, B.step + 1) end)
+bStep("Rotate step", function() return B.rot .. "°" end, function() B.rot = math.max(5, B.rot - 5) end, function() B.rot = math.min(180, B.rot + 5) end)
+bStep("Grid snap", function() return snapAmount() == 0 and "Off" or (snapAmount() .. " studs") end, function() B.snapIdx = (B.snapIdx - 2) % #SNAPS + 1 end, function() B.snapIdx = B.snapIdx % #SNAPS + 1 end)
+rowOf(bdScroll, { { "Duplicate", safe(Bld.duplicate) }, { "Delete", safe(Bld.delete) }, { "Deselect", safe(function() selectPart(nil) end) } })
+rowOf(bdScroll, {
+	{ "Move to Me", safe(function() local p = needSel() local r = root() if not r then fail("No character found.") end modify(p, { CFrame = CFrame.new(snapVec(r.Position + r.CFrame.LookVector * 6)) * (p.CFrame - p.CFrame.Position) }) end) },
+	{ "Go To Part", safe(function() Core.tp(needSel().CFrame + Vector3.new(0, needSel().Size.Y / 2 + 4, 0)) end) },
+})
+section(bdScroll, "Object editor")
+do
+	local r = rowFrame(bdScroll, 36)
+	lbl(r, "Name", UDim2.new(0.3, 0, 1, 0), UDim2.new(0, 10, 0, 0), { font = Enum.Font.GothamMedium })
+	local nb = mk("TextBox", { Size = UDim2.new(0.6, 0, 0, 26), Position = UDim2.new(0.4, -10, 0.5, -13), BackgroundColor3 = Theme.panel2, TextColor3 = Theme.text, Font = Enum.Font.Gotham, TextSize = 13, Text = "", PlaceholderText = "part name", BorderSizePixel = 0, ClearTextOnFocus = false }, r)
+	corner(nb, 6)
+	nb.FocusLost:Connect(function() safe(function() if nb.Text ~= "" then modify(needSel(), { Name = nb.Text:sub(1, 40) }) end end)() end)
+	bUpd[#bUpd + 1] = function() nb.Text = B.sel and B.sel.Name or "" end
+end
+bStep("Transparency", function() return B.sel and string.format("%.1f", B.sel.Transparency) or "-" end,
+	function() local p = needSel() modify(p, { Transparency = math.clamp(p.Transparency - 0.1, 0, 1) }) end,
+	function() local p = needSel() modify(p, { Transparency = math.clamp(p.Transparency + 0.1, 0, 1) }) end)
+bStep("Reflectance", function() return B.sel and string.format("%.1f", B.sel.Reflectance) or "-" end,
+	function() local p = needSel() modify(p, { Reflectance = math.clamp(p.Reflectance - 0.1, 0, 1) }) end,
+	function() local p = needSel() modify(p, { Reflectance = math.clamp(p.Reflectance + 0.1, 0, 1) }) end)
+bToggle("Anchored", function() return B.sel ~= nil and B.sel.Anchored end, function() local p = needSel() modify(p, { Anchored = not p.Anchored }) end)
+bToggle("CanCollide", function() return B.sel ~= nil and B.sel.CanCollide end, function() local p = needSel() modify(p, { CanCollide = not p.CanCollide }) end)
+section(bdScroll, "History & models")
+rowOf(bdScroll, { { "Undo", safe(Bld.undo) }, { "Redo", safe(Bld.redo) }, { "Clear All", safe(Bld.clearAll) } })
+bStep("Saved model", function() local t = B.templates[B.tplIdx] return t and t.name or "none" end,
+	function() if #B.templates > 0 then B.tplIdx = (B.tplIdx - 2) % #B.templates + 1 end end,
+	function() if #B.templates > 0 then B.tplIdx = B.tplIdx % #B.templates + 1 end end)
+rowOf(bdScroll, { { "Save Model", safe(Bld.saveTemplate) }, { "Spawn Model", safe(Bld.spawnTemplate) } })
+builderRefresh = function()
+	for _, u in ipairs(bUpd) do u() end
+	for m, b in pairs(modeBtns) do
+		if m == B.mode then b:SetAttribute("Base", Theme.accent) b.BackgroundColor3 = Theme.accent else setBase(b, Theme.panel2) end
+	end
+	if selLbl then
+		selLbl.Text = B.sel and B.sel.Parent and string.format("%s  •  %.1f × %.1f × %.1f  •  %s", B.sel.Name, B.sel.Size.X, B.sel.Size.Y, B.sel.Size.Z, B.sel.Material.Name) or "Nothing selected"
+	end
+	B.hl.FillColor, B.hl.OutlineColor = Theme.accent, Color3.new(1, 1, 1)
+end
+
+-- ===== SETTINGS PAGE =====
+local stPage = newPage("Settings")
+local stScroll = listFrame(stPage)
+local sUpd = {}
+local function sStep(text, get, dec, inc) sUpd[#sUpd + 1] = stepper(stScroll, text, get, dec, inc) end
+local function sToggle(text, get, set) sUpd[#sUpd + 1] = toggleRow(stScroll, text, get, set) end
+function Core.applyUI()
+	uiScale.Scale = Settings.scale
+	main.BackgroundTransparency = Settings.transparency
+	editor.TextSize = Settings.editorSize
+	for _, c in ipairs(conScroll:GetChildren()) do if c.Name == "Log" then c.TextSize = Settings.consoleSize end end
+	applyAnim()
+	for _, u in ipairs(sUpd) do u() end
+end
+section(stScroll, "Interface")
+sStep("UI scale", function() return string.format("%.1f", Settings.scale) end, function() Settings.scale = math.max(0.6, math.floor(Settings.scale * 10 - 1 + 0.5) / 10) Core.applyUI() end, function() Settings.scale = math.min(1.6, math.floor(Settings.scale * 10 + 1 + 0.5) / 10) Core.applyUI() end)
+sStep("UI transparency", function() return string.format("%.2f", Settings.transparency) end, function() Settings.transparency = math.max(0, math.floor(Settings.transparency * 20 - 1 + 0.5) / 20) Core.applyUI() end, function() Settings.transparency = math.min(0.6, math.floor(Settings.transparency * 20 + 1 + 0.5) / 20) Core.applyUI() end)
+sStep("Theme", function() return ACCENTS[Settings.accent][1] end, function() Settings.accent = (Settings.accent - 2) % #ACCENTS + 1 applyAccent() builderRefresh() refreshList() end, function() Settings.accent = Settings.accent % #ACCENTS + 1 applyAccent() builderRefresh() refreshList() end)
+sToggle("Animations", function() return Settings.anim end, function(v) Settings.anim = v applyAnim() end)
+section(stScroll, "Notifications")
+sToggle("Show notifications", function() return Settings.notify end, function(v) Settings.notify = v end)
+sStep("Notification duration", function() return Settings.notifyTime .. " s" end, function() Settings.notifyTime = math.max(1, Settings.notifyTime - 1) end, function() Settings.notifyTime = math.min(10, Settings.notifyTime + 1) end)
+sStep("Console font size", function() return Settings.consoleSize end, function() Settings.consoleSize = math.max(10, Settings.consoleSize - 1) Core.applyUI() end, function() Settings.consoleSize = math.min(24, Settings.consoleSize + 1) Core.applyUI() end)
+sStep("Editor font size", function() return Settings.editorSize end, function() Settings.editorSize = math.max(10, Settings.editorSize - 1) Core.applyUI() end, function() Settings.editorSize = math.min(24, Settings.editorSize + 1) Core.applyUI() end)
+do
+	local r = rowFrame(stScroll, 36)
+	lbl(r, "Executor brand name", UDim2.new(0.4, 0, 1, 0), UDim2.new(0, 10, 0, 0), { font = Enum.Font.GothamMedium })
+	local bb = mk("TextBox", { Size = UDim2.new(0.5, 0, 0, 26), Position = UDim2.new(0.5, -10, 0.5, -13), BackgroundColor3 = Theme.panel2, TextColor3 = Theme.text, Font = Enum.Font.Gotham, TextSize = 13, Text = Settings.brand, BorderSizePixel = 0, ClearTextOnFocus = false }, r)
+	corner(bb, 6)
+	bb.FocusLost:Connect(function() if bb.Text ~= "" then Settings.brand = bb.Text:sub(1, 20) end bb.Text = Settings.brand end)
+	sUpd[#sUpd + 1] = function() bb.Text = Settings.brand end
+end
+section(stScroll, "Keybinds (click, then press a key)")
+local capture
+local function keyRow(text, field)
+	local r = rowFrame(stScroll, 36)
+	lbl(r, text, UDim2.new(0.6, 0, 1, 0), UDim2.new(0, 10, 0, 0), { font = Enum.Font.GothamMedium })
+	local b
+	b = btn(r, Settings[field], UDim2.fromOffset(110, 26), UDim2.new(1, -120, 0.5, -13), function()
+		capture = { field = field, btn = b }
+		b.Text = "press a key..."
+	end)
+	sUpd[#sUpd + 1] = function() b.Text = Settings[field] end
+end
+keyRow("Toggle window", "keyToggle")
+keyRow("Toggle fly", "keyFly")
+keyRow("Dash", "keyDash")
+keyRow("Toggle noclip", "keyNoclip")
+section(stScroll, "Profile")
+rowOf(stScroll, {
+	{ "Save Settings", function() saveSettings() notify("Settings", "Saved for this session.", "ok") end },
+	{ "Reset Settings", function()
+		for k, v in pairs(DEFAULTS) do Settings[k] = v end
+		applyAccent() Core.applyUI() builderRefresh() refreshList()
+		notify("Settings", "Reset to defaults.", "ok")
+	end },
+})
+
+-- command bar -----------------------------------------------------
+local bottom = mk("Frame", { Size = UDim2.new(1, -SIDE - 24, 0, 34), Position = UDim2.new(0, SIDE + 16, 1, -42), BackgroundColor3 = Theme.panel, BackgroundTransparency = 0.1, BorderSizePixel = 0, ZIndex = 20 }, body)
+corner(bottom, 8) stroke(bottom, Theme.accent, 1, 0.5)
+local prompt = lbl(bottom, ">", UDim2.fromOffset(24, 34), UDim2.new(0, 8, 0, 0), { font = Enum.Font.GothamBold, ts = 16 })
+bindAccent(prompt, "TextColor3") prompt.ZIndex = 21
+local cmdBox = mk("TextBox", { Size = UDim2.new(1, -90, 1, 0), Position = UDim2.new(0, 30, 0, 0), BackgroundTransparency = 1, TextColor3 = Theme.text, PlaceholderText = "command...  (fly, speed 100, jump 150, noclip, help)", PlaceholderColor3 = Theme.sub, Text = "", Font = Enum.Font.Code, TextSize = 14, TextXAlignment = Enum.TextXAlignment.Left, ClearTextOnFocus = false, ZIndex = 21 }, bottom)
+local CmdHistory, histIdx = {}, 0
+local function execLine()
+	local line = cmdBox.Text
+	if line:match("^%s*$") then return end
+	CmdHistory[#CmdHistory + 1] = line
+	histIdx = #CmdHistory + 1
+	cmdBox.Text = ""
+	log("> " .. line, "info")
+	local ok, res = runCommand(line)
+	if ok then
+		if res then log(res, "ok") notify("Command", tostring(res), "ok") end
+	else
+		log(res, "error")
+		notify("Command error", tostring(res), "error")
+	end
+end
+local runBtn = btn(bottom, "RUN", UDim2.fromOffset(54, 24), UDim2.new(1, -60, 0.5, -12), execLine, { accent = true, ts = 12 })
+runBtn.ZIndex = 21
+cmdBox.FocusLost:Connect(function(enter) if enter then execLine() cmdBox:CaptureFocus() end end)
+local sug = mk("Frame", { Size = UDim2.new(1, -SIDE - 24, 0, 0), Position = UDim2.new(0, SIDE + 16, 1, -46), AnchorPoint = Vector2.new(0, 1), BackgroundColor3 = Theme.panel, BorderSizePixel = 0, Visible = false, ZIndex = 40 }, body)
+corner(sug, 8) stroke(sug, Theme.accent, 1, 0.5)
+mk("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, sug)
+local function updateSuggestions()
+	for _, c in ipairs(sug:GetChildren()) do if c:IsA("TextButton") then c:Destroy() end end
+	local txt = cmdBox.Text:lower()
+	local word = txt:match("^%s*([^%s]*)")
+	if not word or word == "" then sug.Visible = false return end
+	local list = {}
+	if txt:match("^%s*%S+%s") then
+		local c = Cmds[word]
+		if c then list[1] = c end
+	else
+		for _, c in ipairs(CmdList) do if c.name:sub(1, #word) == word then list[#list + 1] = c end end
+		if #list == 0 then for _, c in ipairs(CmdList) do if c.name:find(word, 1, true) then list[#list + 1] = c end end end
+	end
+	for i = 1, math.min(#list, 5) do
+		local c = list[i]
+		local b = mk("TextButton", { Size = UDim2.new(1, 0, 0, 26), BackgroundTransparency = 1, Text = "  " .. c.usage .. "   — " .. c.desc, TextColor3 = Theme.text, Font = Enum.Font.Code, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, LayoutOrder = i, ZIndex = 41 }, sug)
+		b.Activated:Connect(function() cmdBox.Text = c.name .. " " cmdBox:CaptureFocus() end)
+	end
+	sug.Size = UDim2.new(1, -SIDE - 24, 0, math.min(#list, 5) * 26)
+	sug.Visible = #list > 0
+end
+cmdBox:GetPropertyChangedSignal("Text"):Connect(updateSuggestions)
+cmdBox.Focused:Connect(updateSuggestions)
+cmdBox.FocusLost:Connect(function() task.delay(0.15, function() sug.Visible = false end) end)
+
+-- fly pad (mobile)
+S.flyPad = mk("Frame", { Size = UDim2.fromOffset(70, 150), AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -20, 1, -140), BackgroundTransparency = 1, Visible = false, ZIndex = 120 }, gui)
+local function holdBtn(text, y, key)
+	local b = mk("TextButton", { Text = text, Size = UDim2.fromOffset(64, 64), Position = UDim2.new(0, 3, 0, y), BackgroundColor3 = Theme.panel, BackgroundTransparency = 0.2, TextColor3 = Theme.text, Font = Enum.Font.GothamBold, TextSize = 24, AutoButtonColor = false, ZIndex = 121 }, S.flyPad)
+	corner(b, 32) stroke(b, Theme.accent, 2, 0.2)
+	b.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then S.hold[key] = true end end)
+	b.InputEnded:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then S.hold[key] = false end end)
+end
+holdBtn("▲", 0, "up")
+holdBtn("▼", 80, "down")
+
+-- sidebar buttons & page switching ---------------------------------------
+local sideBtns, currentKey = {}, nil
+local SIDE_ITEMS = { { "All Features", "LIST", "ALL" } }
+for _, c in ipairs(CATS) do SIDE_ITEMS[#SIDE_ITEMS + 1] = { c:sub(1, 1) .. c:sub(2):lower(), "LIST", c } end
+for _, it in ipairs({ { "Script Editor", "Editor" }, { "Console", "Console" }, { "Builder", "Builder" }, { "Players", "Players" }, { "Settings", "Settings" } }) do SIDE_ITEMS[#SIDE_ITEMS + 1] = it end
+SIDE_ITEMS[4][1] = "FE Tools"
+local function markSide(key)
+	for k, b in pairs(sideBtns) do
+		if k == key then b:SetAttribute("Base", Theme.accent) b.BackgroundColor3 = Theme.accent else setBase(b, Theme.panel2) end
+	end
+end
+showPage = function(name, cat)
+	for n, p in pairs(pages) do p.Visible = (n == name) end
+	local key = name
+	if name == "LIST" then
+		curCat = cat or curCat
+		key = curCat
+		applyFilter()
+	elseif name == "Players" then
+		rebuildPlayers()
+	elseif name == "Builder" then
+		builderRefresh()
+	end
+	currentKey = key
+	markSide(key)
+	if name == "Builder" then
+		if not main.Visible then main.Visible = true end
+	end
+end
+for i, it in ipairs(SIDE_ITEMS) do
+	local key = it[3] or it[2]
+	local count = it[3] and (it[3] == "ALL" and #Features or catCount[it[3]]) or nil
+	local b = btn(side, it[1] .. (count and ("  (" .. count .. ")") or ""), UDim2.new(1, -4, 0, 32), nil, function() showPage(it[2], it[3]) end, { ts = 12 })
+	b.LayoutOrder = i b.TextXAlignment = Enum.TextXAlignment.Left b.ZIndex = 4
+	mk("UIPadding", { PaddingLeft = UDim.new(0, 10) }, b)
+	sideBtns[key] = b
+end
+
+-- resize handle
+local handle = btn(main, "◢", UDim2.fromOffset(22, 22), UDim2.new(1, -24, 1, -24), nil, { ts = 12, bg = Theme.panel })
+handle.ZIndex = 80 handle.BackgroundTransparency = 0.4
+local drag = { mode = nil }
+local function beginDrag(mode, input)
+	drag.mode, drag.start, drag.pos = mode, input.Position, main.Position
+	drag.w, drag.h = winW, winH
+end
+top.InputBegan:Connect(function(i)
+	if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then beginDrag("move", i) end
+end)
+handle.InputBegan:Connect(function(i)
+	if (i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch) and not minimized then beginDrag("size", i) end
+end)
+track(UIS.InputChanged:Connect(function(i)
+	if not drag.mode then return end
+	if i.UserInputType ~= Enum.UserInputType.MouseMovement and i.UserInputType ~= Enum.UserInputType.Touch then return end
+	local d = (i.Position - drag.start) / uiScale.Scale
+	if drag.mode == "move" then
+		main.Position = UDim2.new(drag.pos.X.Scale, drag.pos.X.Offset + d.X, drag.pos.Y.Scale, drag.pos.Y.Offset + d.Y)
+	else
+		local v = (cam() and cam().ViewportSize or Vector2.new(1280, 720)) / uiScale.Scale
+		winW = math.clamp(drag.w + d.X, MINW, math.max(MINW, v.X - 8))
+		winH = math.clamp(drag.h + d.Y, MINH, math.max(MINH, v.Y - 8))
+		main.Size = UDim2.fromOffset(winW, winH)
+	end
+end))
+track(UIS.InputEnded:Connect(function(i)
+	if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then drag.mode = nil end
+	if i.KeyCode == Enum.KeyCode.LeftShift and Toggles.sprint.on then
+		local h = hum() if h then h.WalkSpeed = S.ws or S.orig.ws end
+	end
+end))
+
+-- floating launcher button (mobile + PC)
+local launcher = mk("TextButton", { Size = UDim2.fromOffset(46, 46), Position = UDim2.new(0, 12, 0.5, -23), BackgroundColor3 = Theme.panel, Text = "N", TextColor3 = Theme.text, Font = Enum.Font.GothamBlack, TextSize = 22, AutoButtonColor = false, ZIndex = 140 }, gui)
+corner(launcher, 23)
+local lStroke = stroke(launcher, Theme.accent, 2, 0.1) bindAccent(lStroke, "Color")
+toggleWindow = function()
+	if main.Visible then
+		tw(uiScale, 0.18, { Scale = Settings.scale * 0.9 })
+		task.delay(Settings.anim and 0.18 or 0, function() main.Visible = false uiScale.Scale = Settings.scale end)
+	else
+		uiScale.Scale = Settings.scale * 0.9
+		main.Visible = true
+		tw(uiScale, 0.25, { Scale = Settings.scale }, Enum.EasingStyle.Back)
+	end
+end
+launcher.Activated:Connect(function() toggleWindow() end)
+
+-- global input
+track(UIS.InputBegan:Connect(function(input, gpe)
+	if capture then
+		if input.UserInputType == Enum.UserInputType.Keyboard then
+			Settings[capture.field] = input.KeyCode.Name
+			capture.btn.Text = input.KeyCode.Name
+			capture = nil
+		end
+		return
+	end
+	if input.UserInputType == Enum.UserInputType.Keyboard then
+		if cmdBox:IsFocused() then
+			if input.KeyCode == Enum.KeyCode.Up and #CmdHistory > 0 then
+				histIdx = math.max(1, histIdx - 1)
+				cmdBox.Text = CmdHistory[histIdx]
+				cmdBox.CursorPosition = #cmdBox.Text + 1
+			elseif input.KeyCode == Enum.KeyCode.Down and #CmdHistory > 0 then
+				histIdx = math.min(#CmdHistory + 1, histIdx + 1)
+				cmdBox.Text = CmdHistory[histIdx] or ""
+				cmdBox.CursorPosition = #cmdBox.Text + 1
+			end
+			return
+		end
+		if gpe then return end
+		local k = input.KeyCode.Name
+		if k == Settings.keyToggle then toggleWindow()
+		elseif k == Settings.keyFly then setToggle("fly")
+		elseif k == Settings.keyDash then local ok, e = pcall(Core.dash) if not ok then notify("Dash", cleanErr(e), "error") end
+		elseif k == Settings.keyNoclip then setToggle("noclip")
+		elseif k == "LeftShift" and Toggles.sprint.on then
+			local h = hum() if h then h.WalkSpeed = (S.ws or S.orig.ws) * S.sprintMult end
+		end
+	elseif (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) and not gpe and B.active then
+		worldClick(input)
+	end
+end))
+
+----------------------------------------------------------------------
+-- SIMULATOR INTERPRETER
+----------------------------------------------------------------------
+local function unq(s) return s:match('^"(.*)"$') or s:match("^'(.*)'$") or s end
+runSim = function(src)
+	local handlers = { WalkSpeed = Core.setWS, JumpPower = Core.setJP, HipHeight = Core.setHip, Gravity = Core.setGravity, FieldOfView = Core.setFOV }
+	for rawLine in (src .. "\n"):gmatch("(.-)\r?\n") do
+		local line = rawLine:match("^%s*(.-)%s*$")
+		if line ~= "" and line:sub(1, 2) ~= "--" then
+			local pr = line:match("^print%s*%((.*)%)%s*$")
+			local wr = line:match("^warn%s*%((.*)%)%s*$")
+			if pr then
+				log(unq(pr), "info")
+			elseif wr then
+				log(unq(wr), "warn")
+			elseif line:match("^task%.wait") or line:match("^wait") then
+				local d = tonumber(line:match("%(%s*([%d%.]+)%s*%)")) or 0.1
+				task.wait(math.clamp(d, 0, 3))
+			elseif line:match("^loadstring") or line:match("^require") then
+				log("Simulator: '" .. line:match("^%w+") .. "' is not available (no real code execution).", "warn")
+			else
+				local k, v = line:match("%.(%a+)%s*=%s*(%-?[%d%.]+)%s*$")
+				if k and handlers[k] then
+					local ok, e = pcall(handlers[k], tonumber(v))
+					if ok then log(k .. " = " .. v, "ok") else log(cleanErr(e), "error") end
+				else
+					local ok, res = runCommand(line)
+					if ok then if res then log(res, "ok") end
+					else log((res:find("^Unknown command") and ("Unsupported statement in simulator: " .. line) or res), "error") end
+				end
+			end
+		end
+	end
+end
+
+----------------------------------------------------------------------
+-- SHUTDOWN / CLEANUP
+----------------------------------------------------------------------
+local closed = false
+function Core.shutdown()
+	if closed then return end
+	closed = true
+	for _, t in pairs(Toggles) do
+		if t.on then pcall(t.fn, false) t.on = false end
+	end
+	for n in pairs(Tickers) do removeTicker(n) end
+	Workspace.Gravity = defaultGravity
+	local h = hum()
+	if h then
+		h.WalkSpeed, h.HipHeight = S.orig.ws, S.orig.hip
+		h.UseJumpPower = true h.JumpPower = S.orig.jp h.CameraOffset = Vector3.zero
+	end
+	if cam() then cam().FieldOfView = S.orig.fov end
+	for _, n in ipairs({ "NebulaV7_Blur", "NebulaV7_Bloom", "NebulaV7_CC", "NebulaV7_Atmo" }) do
+		local o = Lighting:FindFirstChild(n) if o then o:Destroy() end
+	end
+	if airPart then airPart:Destroy() end
+	if B.hl then B.hl:Destroy() end
+	espClear()
+	for _, c in ipairs(conns) do c:Disconnect() end
+	table.clear(conns)
+	for _, t in ipairs(orbTweens) do t:Cancel() end
+	gui:Destroy()
+	_G.__NebulaV7 = nil
+end
+_G.__NebulaV7 = { Destroy = Core.shutdown }
+gui.Destroying:Connect(function() if not closed then Core.shutdown() end end)
+
+----------------------------------------------------------------------
+-- LOADING SCREEN -> OPEN
+----------------------------------------------------------------------
+Core.applyUI()
+setStatus()
+rebuildPlayers()
+showPage("LIST", "ALL")
+
+local loader = mk("CanvasGroup", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = Theme.bg, ZIndex = 500, GroupTransparency = 0 }, gui)
+do
+	local ring = mk("Frame", { Size = UDim2.fromOffset(64, 64), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, -90), BackgroundTransparency = 1, ZIndex = 501 }, loader)
+	corner(ring, 32)
+	local rs = mk("UIStroke", { Thickness = 5, Color = Theme.accent }, ring)
+	mk("UIGradient", { Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.7, 1), NumberSequenceKeypoint.new(1, 1) }) }, rs)
+	local spin = TweenService:Create(ring, TweenInfo.new(1, Enum.EasingStyle.Linear, Enum.EasingDirection.In, -1), { Rotation = 360 })
+	spin:Play()
+	local logo = lbl(loader, "NEBULA HUB V7", UDim2.new(1, 0, 0, 50), UDim2.new(0, 0, 0.5, -30), { font = Enum.Font.GothamBlack, ts = 44, ax = Enum.TextXAlignment.Center })
+	logo.ZIndex = 501
+	mk("UIGradient", { Color = ColorSequence.new(Color3.new(1, 1, 1), Color3.fromRGB(180, 100, 255)) }, logo)
+	local tag = lbl(loader, "EXECUTOR SIMULATOR", UDim2.new(1, 0, 0, 20), UDim2.new(0, 0, 0.5, 20), { color = Theme.sub, ts = 13, ax = Enum.TextXAlignment.Center, font = Enum.Font.GothamMedium })
+	tag.ZIndex = 501
+	local lbar = mk("Frame", { Size = UDim2.fromOffset(300, 6), AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0.5, 60), BackgroundColor3 = Theme.panel2, BorderSizePixel = 0, ZIndex = 501 }, loader)
+	corner(lbar, 3)
+	local lfill = mk("Frame", { Size = UDim2.new(0, 0, 1, 0), BorderSizePixel = 0, ZIndex = 502 }, lbar)
+	corner(lfill, 3) bindAccent(lfill, "BackgroundColor3")
+	local lmsg = lbl(loader, "", UDim2.new(1, 0, 0, 20), UDim2.new(0, 0, 0.5, 74), { color = Theme.sub, ts = 12, ax = Enum.TextXAlignment.Center })
+	lmsg.ZIndex = 501
+	task.spawn(function()
+		local steps = {
+			"Loading interface...", "Building feature library (" .. #Features .. " features)...", "Registering " .. #CmdList .. " commands...",
+			"Preparing builder toolbox...", "Applying settings...", "Ready.",
+		}
+		for i, s in ipairs(steps) do
+			lmsg.Text = s
+			tw(lfill, 0.3, { Size = UDim2.new(i / #steps, 0, 1, 0) })
+			task.wait(Settings.anim and 0.35 or 0.03)
+		end
+		task.wait(Settings.anim and 0.25 or 0)
+		spin:Cancel()
+		if Settings.anim then
+			local t = TweenService:Create(loader, TweenInfo.new(0.5), { GroupTransparency = 1 })
+			t:Play()
+			t.Completed:Wait()
+		end
+		loader:Destroy()
+		if closed then return end
+		uiScale.Scale = Settings.scale * 0.88
+		main.Visible = true
+		tw(uiScale, 0.45, { Scale = Settings.scale }, Enum.EasingStyle.Back)
+		notify("NEBULA HUB V7", #Features .. " features ready. Press " .. Settings.keyToggle .. " to hide/show.", "ok")
+		log("NEBULA HUB V7 loaded. Type 'help' for commands.", "ok")
+		applyAnim()
+	end)
+end
