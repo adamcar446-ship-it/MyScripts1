@@ -1,153 +1,412 @@
-
--- NEBULA HUB V5
--- ONE SERVER SCRIPT
--- Place in ServerScriptService
+--[[
+    NEBULA HUB V6
+    Single LocalScript
+    Place in StarterPlayerScripts
+    Features: Movement, Player, Visuals, Utilities
+]]
 
 local Players = game:GetService("Players")
-local RS = game:GetService("ReplicatedStorage")
+local UIS = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local Lighting = game:GetService("Lighting")
+local TeleportService = game:GetService("TeleportService")
 
-local remote = Instance.new("RemoteEvent")
-remote.Name = "NebulaHubRemote"
-remote.Parent = RS
+local Player = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
 
-local folder = Instance.new("Folder")
-folder.Name = "NebulaObjects"
-folder.Parent = workspace
+local Settings = {
+    Speed = 16,
+    Jump = 50,
+    Fly = false,
+    InfiniteJump = false,
+    ESP = false,
+    Fullbright = false,
+    Noclip = false,
+}
 
-local function createButton(parent, name, callback)
-    local button = Instance.new("TextButton")
-    button.Name = name
-    button.Size = UDim2.new(1, -12, 0, 38)
-    button.BackgroundColor3 = Color3.fromRGB(10, 35, 25)
-    button.TextColor3 = Color3.fromRGB(0, 255, 120)
-    button.Text = name
-    button.Font = Enum.Font.Code
-    button.TextSize = 15
-    button.Parent = parent
+local selectedPlayer = nil
+local highlights = {}
+local minimized = false
 
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 7)
-    corner.Parent = button
-
-    return button
+local function Character()
+    return Player.Character
 end
 
-local function createGUI(player)
-    local gui = Instance.new("ScreenGui")
-    gui.Name = "NEBULA_HUB"
-    gui.ResetOnSpawn = false
+local function Humanoid()
+    local c = Character()
+    return c and c:FindFirstChildOfClass("Humanoid")
+end
 
-    local main = Instance.new("Frame")
-    main.Size = UDim2.fromOffset(420, 440)
-    main.Position = UDim2.new(.5, -210, .5, -220)
-    main.BackgroundColor3 = Color3.fromRGB(5, 10, 15)
-    main.Active = true
-    main.Draggable = true
-    main.Parent = gui
+local function Root()
+    local c = Character()
+    return c and c:FindFirstChild("HumanoidRootPart")
+end
 
-    Instance.new("UICorner", main).CornerRadius = UDim.new(0, 12)
+local function updateStats()
+    local h = Humanoid()
+    if h then
+        h.WalkSpeed = Settings.Speed
+        h.UseJumpPower = true
+        h.JumpPower = Settings.Jump
+    end
+end
+
+-- GUI
+
+local GUI = Instance.new("ScreenGui")
+GUI.Name = "NEBULA_HUB_V6"
+GUI.ResetOnSpawn = false
+GUI.Parent = Player:WaitForChild("PlayerGui")
+
+local Main = Instance.new("Frame")
+Main.Size = UDim2.fromOffset(650, 470)
+Main.Position = UDim2.new(.5, -325, .5, -235)
+Main.BackgroundColor3 = Color3.fromRGB(7, 10, 16)
+Main.Active = true
+Main.Draggable = true
+Main.Parent = GUI
+
+Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 12)
+
+local Border = Instance.new("UIStroke")
+Border.Color = Color3.fromRGB(0, 255, 120)
+Border.Thickness = 2
+Border.Parent = Main
+
+local Header = Instance.new("TextLabel")
+Header.Size = UDim2.new(1, 0, 0, 60)
+Header.BackgroundColor3 = Color3.fromRGB(0, 30, 18)
+Header.Text = "NEBULA HUB V6  //  110+"
+Header.TextColor3 = Color3.fromRGB(0, 255, 120)
+Header.Font = Enum.Font.Code
+Header.TextSize = 24
+Header.Parent = Main
+
+local Sidebar = Instance.new("Frame")
+Sidebar.Position = UDim2.fromOffset(0, 65)
+Sidebar.Size = UDim2.fromOffset(145, 405)
+Sidebar.BackgroundColor3 = Color3.fromRGB(10, 17, 20)
+Sidebar.BorderSizePixel = 0
+Sidebar.Parent = Main
+
+local Content = Instance.new("ScrollingFrame")
+Content.Position = UDim2.fromOffset(155, 75)
+Content.Size = UDim2.fromOffset(485, 385)
+Content.BackgroundTransparency = 1
+Content.BorderSizePixel = 0
+Content.ScrollBarThickness = 4
+Content.Parent = Main
+
+local Layout = Instance.new("UIListLayout")
+Layout.Padding = UDim.new(0, 8)
+Layout.Parent = Content
+
+local Padding = Instance.new("UIPadding")
+Padding.PaddingTop = UDim.new(0, 8)
+Padding.PaddingLeft = UDim.new(0, 8)
+Padding.Parent = Content
+
+Layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    Content.CanvasSize = UDim2.fromOffset(0, Layout.AbsoluteContentSize.Y + 20)
+end)
+
+local function clear()
+    for _, v in ipairs(Content:GetChildren()) do
+        if v:IsA("GuiObject") and v ~= Layout and v ~= Padding then
+            v:Destroy()
+        end
+    end
+end
+
+local function button(text, callback)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(1, -15, 0, 40)
+    b.BackgroundColor3 = Color3.fromRGB(13, 29, 23)
+    b.TextColor3 = Color3.fromRGB(0, 255, 120)
+    b.Text = text
+    b.Font = Enum.Font.Code
+    b.TextSize = 15
+    b.Parent = Content
+
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 7)
 
     local stroke = Instance.new("UIStroke")
-    stroke.Color = Color3.fromRGB(0, 255, 120)
-    stroke.Thickness = 2
-    stroke.Parent = main
+    stroke.Color = Color3.fromRGB(0, 150, 80)
+    stroke.Parent = b
 
-    local title = Instance.new("TextLabel")
-    title.Size = UDim2.new(1, 0, 0, 55)
-    title.BackgroundColor3 = Color3.fromRGB(0, 30, 18)
-    title.Text = "NEBULA HUB V5"
-    title.TextColor3 = Color3.fromRGB(0, 255, 120)
-    title.Font = Enum.Font.Code
-    title.TextSize = 24
-    title.Parent = main
-
-    local list = Instance.new("ScrollingFrame")
-    list.Position = UDim2.fromOffset(10, 65)
-    list.Size = UDim2.new(1, -20, 1, -75)
-    list.BackgroundTransparency = 1
-    list.BorderSizePixel = 0
-    list.ScrollBarThickness = 4
-    list.Parent = main
-
-    local layout = Instance.new("UIListLayout")
-    layout.Padding = UDim.new(0, 7)
-    layout.Parent = list
-
-    layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-        list.CanvasSize = UDim2.fromOffset(0, layout.AbsoluteContentSize.Y + 10)
-    end)
-
-    createButton(list, "CREATE SHARED PART").Activated:Connect(function()
-        remote:FireClient(player, "CreatePart")
-    end)
-
-    createButton(list, "DELETE NEAREST PART").Activated:Connect(function()
-        remote:FireClient(player, "DeletePart")
-    end)
-
-    createButton(list, "COLOR NEAREST PART").Activated:Connect(function()
-        remote:FireClient(player, "ColorPart")
-    end)
-
-    createButton(list, "RESET CHARACTER").Activated:Connect(function()
-        local character = player.Character
-        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-        if humanoid then humanoid.Health = 0 end
-    end)
-
-    createButton(list, "SERVER INFORMATION").Activated:Connect(function()
-        print("NEBULA HUB | Place:", game.PlaceId)
-        print("Players:", #Players:GetPlayers())
-        print("Server:", game.JobId)
-    end)
-
-    gui.Parent = player:WaitForChild("PlayerGui")
+    b.MouseButton1Click:Connect(callback)
+    return b
 end
 
-remote.OnServerEvent:Connect(function(player, action, position)
-    if typeof(position) ~= "Vector3" then return end
+local function tab(name, y, callback)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(1, -10, 0, 42)
+    b.Position = UDim2.fromOffset(5, y)
+    b.BackgroundColor3 = Color3.fromRGB(15, 30, 25)
+    b.TextColor3 = Color3.fromRGB(0, 255, 120)
+    b.Text = name
+    b.Font = Enum.Font.Code
+    b.TextSize = 14
+    b.Parent = Sidebar
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+    b.MouseButton1Click:Connect(callback)
+end
 
-    local character = player.Character
-    local root = character and character:FindFirstChild("HumanoidRootPart")
-    if not root then return end
+-- MOVEMENT
 
-    if (root.Position - position).Magnitude > 50 then
-        return
-    end
+local function movementPage()
+    clear()
 
-    if action == "CreatePart" then
-        local part = Instance.new("Part")
-        part.Name = "NebulaPart"
-        part.Size = Vector3.new(4, 1, 4)
-        part.Position = position
-        part.Anchored = true
-        part.Material = Enum.Material.Neon
-        part.Color = Color3.fromRGB(0, 255, 120)
-        part.Parent = folder
+    button("+10 SPEED", function()
+        Settings.Speed += 10
+        updateStats()
+    end)
 
-    elseif action == "DeletePart" then
-        for _, part in ipairs(folder:GetChildren()) do
-            if part:IsA("BasePart") and
-                (part.Position - position).Magnitude < 10 then
-                part:Destroy()
-                break
-            end
+    button("-10 SPEED", function()
+        Settings.Speed = math.max(0, Settings.Speed - 10)
+        updateStats()
+    end)
+
+    button("+10 JUMP", function()
+        Settings.Jump += 10
+        updateStats()
+    end)
+
+    button("-10 JUMP", function()
+        Settings.Jump = math.max(0, Settings.Jump - 10)
+        updateStats()
+    end)
+
+    button("RESET SPEED AND JUMP", function()
+        Settings.Speed = 16
+        Settings.Jump = 50
+        updateStats()
+    end)
+
+    button("FLY: " .. tostring(Settings.Fly), function()
+        Settings.Fly = not Settings.Fly
+    end)
+
+    button("INFINITE JUMP: " .. tostring(Settings.InfiniteJump), function()
+        Settings.InfiniteJump = not Settings.InfiniteJump
+    end)
+
+    button("NOCLIP: " .. tostring(Settings.Noclip), function()
+        Settings.Noclip = not Settings.Noclip
+    end)
+end
+
+-- PLAYER
+
+local function playerPage()
+    clear()
+
+    local search = Instance.new("TextBox")
+    search.Size = UDim2.new(1, -15, 0, 40)
+    search.BackgroundColor3 = Color3.fromRGB(15, 25, 22)
+    search.PlaceholderText = "Search players..."
+    search.Text = ""
+    search.TextColor3 = Color3.new(1, 1, 1)
+    search.Font = Enum.Font.Code
+    search.Parent = Content
+
+    local function refresh()
+        for _, v in ipairs(Content:GetChildren()) do
+            if v:IsA("TextButton") then v:Destroy() end
         end
 
-    elseif action == "ColorPart" then
-        for _, part in ipairs(folder:GetChildren()) do
-            if part:IsA("BasePart") and
-                (part.Position - position).Magnitude < 10 then
-                part.Color = Color3.fromRGB(255, 0, 100)
+        for _, target in ipairs(Players:GetPlayers()) do
+            if target ~= Player and target.Name:lower():find(search.Text:lower(), 1, true) then
+                button("SELECT: " .. target.Name, function()
+                    selectedPlayer = target
+                end)
+            end
+        end
+    end
+
+    search:GetPropertyChangedSignal("Text"):Connect(refresh)
+    refresh()
+
+    button("TELEPORT TO SELECTED", function()
+        local root = Root()
+        local targetRoot = selectedPlayer
+            and selectedPlayer.Character
+            and selectedPlayer.Character:FindFirstChild("HumanoidRootPart")
+
+        if root and targetRoot then
+            root.CFrame = targetRoot.CFrame * CFrame.new(0, 0, 4)
+        end
+    end)
+
+    button("SPECTATE SELECTED", function()
+        local h = selectedPlayer
+            and selectedPlayer.Character
+            and selectedPlayer.Character:FindFirstChildOfClass("Humanoid")
+
+        if h then Camera.CameraSubject = h end
+    end)
+
+    button("STOP SPECTATING", function()
+        local h = Humanoid()
+        if h then Camera.CameraSubject = h end
+    end)
+
+    button("SELECTED PLAYER INFO", function()
+        if selectedPlayer then
+            print("Name:", selectedPlayer.Name)
+            print("User ID:", selectedPlayer.UserId)
+            print("Display Name:", selectedPlayer.DisplayName)
+        end
+    end)
+
+    button("FLING SELECTED PLAYER", function()
+        warn("Connect this button to a server-authorized knockback RemoteEvent in your own game.")
+    end)
+end
+
+-- VISUALS
+
+local function visualsPage()
+    clear()
+
+    button("ESP: " .. tostring(Settings.ESP), function()
+        Settings.ESP = not Settings.ESP
+
+        for _, h in pairs(highlights) do
+            h:Destroy()
+        end
+        table.clear(highlights)
+
+        if Settings.ESP then
+            for _, target in ipairs(Players:GetPlayers()) do
+                if target ~= Player and target.Character then
+                    local h = Instance.new("Highlight")
+                    h.Adornee = target.Character
+                    h.FillColor = Color3.fromRGB(0, 255, 100)
+                    h.OutlineColor = Color3.new(1, 1, 1)
+                    h.Parent = GUI
+                    highlights[target] = h
+                end
+            end
+        end
+    end)
+
+    button("FULLBRIGHT: " .. tostring(Settings.Fullbright), function()
+        Settings.Fullbright = not Settings.Fullbright
+        Lighting.Brightness = Settings.Fullbright and 3 or 1
+        Lighting.ClockTime = Settings.Fullbright and 14 or 12
+        Lighting.GlobalShadows = not Settings.Fullbright
+    end)
+
+    button("RAINBOW BORDER", function()
+        task.spawn(function()
+            for i = 0, 100 do
+                Border.Color = Color3.fromHSV(i / 100, 1, 1)
+                task.wait(.03)
+            end
+        end)
+    end)
+end
+
+-- UTILITIES
+
+local function utilitiesPage()
+    clear()
+
+    button("RESET CHARACTER", function()
+        local h = Humanoid()
+        if h then h.Health = 0 end
+    end)
+
+    button("REJOIN SERVER", function()
+        TeleportService:Teleport(game.PlaceId, Player)
+    end)
+
+    button("FPS COUNTER", function()
+        print("FPS counter enabled in future update")
+    end)
+
+    button("SERVER INFORMATION", function()
+        print("Place ID:", game.PlaceId)
+        print("Job ID:", game.JobId)
+        print("Players:", #Players:GetPlayers())
+    end)
+
+    button("RESET CAMERA", function()
+        local h = Humanoid()
+        if h then Camera.CameraSubject = h end
+    end)
+end
+
+-- TABS
+
+tab("MOVEMENT", 10, movementPage)
+tab("PLAYER", 60, playerPage)
+tab("VISUALS", 110, visualsPage)
+tab("UTILITIES", 160, utilitiesPage)
+
+-- INPUT
+
+UIS.JumpRequest:Connect(function()
+    if Settings.InfiniteJump then
+        local h = Humanoid()
+        if h then
+            h:ChangeState(Enum.HumanoidStateType.Jumping)
+        end
+    end
+end)
+
+RunService.Stepped:Connect(function()
+    if Settings.Noclip then
+        local c = Character()
+        if c then
+            for _, part in ipairs(c:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = false
+                end
             end
         end
     end
 end)
 
-Players.PlayerAdded:Connect(createGUI)
+RunService.RenderStepped:Connect(function()
+    if not Settings.Fly then return end
 
-for _, player in ipairs(Players:GetPlayers()) do
-    task.spawn(createGUI, player)
-end
+    local root = Root()
+    if not root then return end
 
-print("NEBULA HUB V5 LOADED")
+    local direction = Vector3.zero
+
+    if UIS:IsKeyDown(Enum.KeyCode.W) then
+        direction += Camera.CFrame.LookVector
+    end
+    if UIS:IsKeyDown(Enum.KeyCode.S) then
+        direction -= Camera.CFrame.LookVector
+    end
+    if UIS:IsKeyDown(Enum.KeyCode.A) then
+        direction -= Camera.CFrame.RightVector
+    end
+    if UIS:IsKeyDown(Enum.KeyCode.D) then
+        direction += Camera.CFrame.RightVector
+    end
+    if UIS:IsKeyDown(Enum.KeyCode.Space) then
+        direction += Vector3.yAxis
+    end
+    if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then
+        direction -= Vector3.yAxis
+    end
+
+    root.AssemblyLinearVelocity =
+        direction.Magnitude > 0
+        and direction.Unit * 50
+        or Vector3.zero
+end)
+
+Player.CharacterAdded:Connect(function()
+    task.wait(1)
+    updateStats()
+end)
+
+movementPage()
+
+print("NEBULA HUB V6 LOADED")
