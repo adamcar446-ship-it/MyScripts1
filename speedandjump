@@ -1,0 +1,129 @@
+
+-- ULTIMATE HACKER MODE
+-- Speed & Jump GUI
+
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+
+local speed = 16
+local jump = 50
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "HackerMode"
+gui.ResetOnSpawn = false
+gui.Parent = player:WaitForChild("PlayerGui")
+
+local main = Instance.new("Frame")
+main.Size = UDim2.new(0, 320, 0, 300)
+main.Position = UDim2.new(0.5, -160, 0.5, -150)
+main.BackgroundColor3 = Color3.fromRGB(8, 12, 15)
+main.BorderSizePixel = 0
+main.Active = true
+main.Draggable = true
+main.Parent = gui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 12)
+corner.Parent = main
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(0, 255, 100)
+stroke.Thickness = 2
+stroke.Parent = main
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 50)
+title.BackgroundColor3 = Color3.fromRGB(0, 30, 15)
+title.Text = "⚡ ULTIMATE HACKER MODE"
+title.TextColor3 = Color3.fromRGB(0, 255, 100)
+title.TextSize = 18
+title.Font = Enum.Font.Code
+title.Parent = main
+
+local function createButton(text, position, color, callback)
+    local button = Instance.new("TextButton")
+    button.Size = UDim2.new(0, 135, 0, 55)
+    button.Position = position
+    button.BackgroundColor3 = Color3.fromRGB(15, 25, 22)
+    button.Text = text
+    button.TextColor3 = color
+    button.TextSize = 16
+    button.Font = Enum.Font.Code
+    button.Parent = main
+
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 8)
+    c.Parent = button
+
+    local s = Instance.new("UIStroke")
+    s.Color = color
+    s.Thickness = 1.5
+    s.Parent = button
+
+    button.MouseButton1Click:Connect(callback)
+end
+
+local stats = Instance.new("TextLabel")
+stats.Size = UDim2.new(1, 0, 0, 35)
+stats.Position = UDim2.new(0, 0, 0, 65)
+stats.BackgroundTransparency = 1
+stats.TextColor3 = Color3.fromRGB(0, 255, 100)
+stats.TextSize = 16
+stats.Font = Enum.Font.Code
+stats.Parent = main
+
+local function update()
+    stats.Text = "SPEED: " .. speed .. " | JUMP: " .. jump
+
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+    if humanoid then
+        humanoid.WalkSpeed = speed
+        humanoid.UseJumpPower = true
+        humanoid.JumpPower = jump
+    end
+end
+
+createButton("+10 SPEED", UDim2.new(0, 15, 0, 115),
+    Color3.fromRGB(0, 255, 100), function()
+        speed += 10
+        update()
+    end)
+
+createButton("-10 SPEED", UDim2.new(0, 170, 0, 115),
+    Color3.fromRGB(255, 60, 60), function()
+        speed = math.max(0, speed - 10)
+        update()
+    end)
+
+createButton("+10 JUMP", UDim2.new(0, 15, 0, 185),
+    Color3.fromRGB(0, 180, 255), function()
+        jump += 10
+        update()
+    end)
+
+createButton("-10 JUMP", UDim2.new(0, 170, 0, 185),
+    Color3.fromRGB(180, 80, 255), function()
+        jump = math.max(0, jump - 10)
+        update()
+    end)
+
+local close = Instance.new("TextButton")
+close.Size = UDim2.new(0, 30, 0, 30)
+close.Position = UDim2.new(1, -35, 0, 10)
+close.BackgroundColor3 = Color3.fromRGB(100, 0, 0)
+close.Text = "X"
+close.TextColor3 = Color3.new(1, 1, 1)
+close.Parent = main
+
+close.MouseButton1Click:Connect(function()
+    gui:Destroy()
+end)
+
+player.CharacterAdded:Connect(function()
+    task.wait(1)
+    update()
+end)
+
+update()
