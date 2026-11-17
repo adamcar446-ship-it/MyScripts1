@@ -1,67 +1,3 @@
-    ["Crimson Crystal 3"] = CFrame.new(-972,-340,-4898),
-    ["Crimson Crystal 4"] = CFrame.new(-1056,-339,-4950),
-}
-
-local Categories = {
-    {Name = "LOCATIONS", Data = LOCATIONS},
-    {Name = "NPCS", Data = NPCS},
-    {Name = "CRYSTALS", Data = CRYSTALS},
-}
-
-local old = player:WaitForChild("PlayerGui"):FindFirstChild("TeleportHub")
-if old then old:Destroy() end
-
-local gui = Instance.new("ScreenGui")
-gui.Name = "TeleportHub"
-gui.ResetOnSpawn = false
-gui.Parent = player.PlayerGui
-
-local main = Instance.new("Frame")
-main.Size = UDim2.fromOffset(330, 460)
-main.Position = UDim2.new(0.5, -165, 0.5, -230)
-main.BackgroundColor3 = Color3.fromRGB(19, 19, 27)
-main.BorderSizePixel = 0
-main.Parent = gui
-Instance.new("UICorner", main).CornerRadius = UDim.new(0, 12)
-
-local stroke = Instance.new("UIStroke")
-stroke.Color = Color3.fromRGB(125, 85, 230)
-stroke.Thickness = 1.5
-stroke.Parent = main
-
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -50, 0, 42)
-title.Position = UDim2.fromOffset(12, 0)
-title.BackgroundTransparency = 1
-title.Text = "DELTA  |  TELEPORT HUB"
-title.TextColor3 = Color3.new(1, 1, 1)
-title.Font = Enum.Font.GothamBold
-title.TextSize = 17
-title.TextXAlignment = Enum.TextXAlignment.Left
-title.Parent = main
-
-local close = Instance.new("TextButton")
-close.Size = UDim2.fromOffset(30, 30)
-close.Position = UDim2.new(1, -38, 0, 6)
-close.Text = "X"
-close.TextColor3 = Color3.new(1, 1, 1)
-close.BackgroundColor3 = Color3.fromRGB(170, 55, 65)
-close.Font = Enum.Font.GothamBold
-close.TextSize = 14
-close.Parent = main
-Instance.new("UICorner", close).CornerRadius = UDim.new(0, 7)
-close.MouseButton1Click:Connect(function() gui:Destroy() end)
-
-local search = Instance.new("TextBox")
-search.Size = UDim2.new(1, -20, 0, 34)
-search.Position = UDim2.fromOffset(10, 48)
-search.BackgroundColor3 = Color3.fromRGB(34, 34, 47)
-search.TextColor3 = Color3.new(1, 1, 1)
-search.PlaceholderColor3 = Color3.fromRGB(150, 150, 165)
-search.PlaceholderText = "Search..."
-search.Text = ""
-search.ClearTextOnFocus = false
-search.Font = Enum.Font.Gotham
 search.TextSize = 13
 search.Parent = main
 Instance.new("UICorner", search).CornerRadius = UDim.new(0, 7)
@@ -158,3 +94,27 @@ for _, category in ipairs(Categories) do
         render()
     end)
 end
+
+search:GetPropertyChangedSignal("Text"):Connect(render)
+render()
+
+-- Drag window by title area
+local dragging, dragStart, startPos = false, nil, nil
+title.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true
+        dragStart = input.Position
+        startPos = main.Position
+    end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+        local delta = input.Position - dragStart
+        main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+end)
+
+print("Teleport Hub loaded | " .. #Categories .. " categories")
