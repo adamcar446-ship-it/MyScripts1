@@ -1,0 +1,249 @@
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+
+local Player = Players.LocalPlayer
+
+local Locations = {
+    -- DESOLATE DEEP
+    ["Desolate Deep"] = CFrame.new(-790,125,-3100),
+    ["Desolate Pocket"] = CFrame.new(-1030,125,-3150),
+    ["Luminescent Cavern"] = CFrame.new(-1143,-336,-4167),
+    ["Crimson Cavern"] = CFrame.new(-1035,-360,-4800),
+
+    -- LOST JUNGLE
+    ["Lost Jungle"] = CFrame.new(-2680,154,-2078),
+
+    -- ATLANTIS
+    ["Atlantis"] = CFrame.new(-4300,-580,1800),
+
+    -- BOREAL PINES
+    ["Boreal Pines"] = CFrame.new(21400,135,4123),
+
+    -- MARIANA'S VEIL
+    ["Mariana's Veil"] = CFrame.new(-1500,125,530),
+
+    -- TIDEFALL
+    ["Tidefall"] = CFrame.new(3223,130,850),
+
+    -- THE DEEP
+    ["The Deep"] = CFrame.new(-194,130,-4669),
+
+    -- MAIN LOCATIONS
+    ["Moosewood"] = CFrame.new(350,135,250),
+    ["Roslit Bay"] = CFrame.new(-1450,135,750),
+    ["Sunstone Island"] = CFrame.new(-935,130,-1105),
+    ["Terrapin Island"] = CFrame.new(-200,130,1925),
+    ["Snowcap Island"] = CFrame.new(2600,150,2400),
+    ["Mushgrove Swamp"] = CFrame.new(2425,130,-670),
+    ["Ancient Isle"] = CFrame.new(5833,125,401),
+    ["Forsaken Shores"] = CFrame.new(-2425,135,1555),
+    ["Grand Reef"] = CFrame.new(-3530,130,550),
+    ["Castaway Cliffs"] = CFrame.new(690,135,-1693),
+    ["Cursed Isle"] = CFrame.new(1860,135,1210),
+    ["Drylands"] = CFrame.new(-6200,180,-1500),
+    ["Everturn Forest"] = CFrame.new(2365,130,-2330),
+    ["Scoria Reach"] = CFrame.new(-4781,138,-1378),
+    ["Statue of Sovereignty"] = CFrame.new(20,160,-1040),
+    ["Trade Plaza"] = CFrame.new(535,82,775),
+    ["Treasure Island"] = CFrame.new(8582,175,-17304),
+    ["Vertigo"] = CFrame.new(-110,-515,1040),
+    ["Wrath of Olympus"] = CFrame.new(-4265,-1117,1825),
+    ["Aquarium"] = CFrame.new(3699,4252,2999),
+}
+
+-- REMOVE OLD GUI
+local oldGui = Player.PlayerGui:FindFirstChild("TeleportHub")
+if oldGui then
+    oldGui:Destroy()
+end
+
+-- SCREEN GUI
+local Gui = Instance.new("ScreenGui")
+Gui.Name = "TeleportHub"
+Gui.ResetOnSpawn = false
+Gui.Parent = Player:WaitForChild("PlayerGui")
+
+-- MAIN FRAME
+local Main = Instance.new("Frame")
+Main.Size = UDim2.fromOffset(300,430)
+Main.Position = UDim2.new(0.5,-150,0.5,-215)
+Main.BackgroundColor3 = Color3.fromRGB(18,18,25)
+Main.BorderSizePixel = 0
+Main.Parent = Gui
+
+Instance.new("UICorner",Main).CornerRadius = UDim.new(0,12)
+
+local Stroke = Instance.new("UIStroke")
+Stroke.Color = Color3.fromRGB(105,75,220)
+Stroke.Thickness = 1.5
+Stroke.Parent = Main
+
+-- TOP BAR
+local Top = Instance.new("Frame")
+Top.Size = UDim2.new(1,0,0,45)
+Top.BackgroundColor3 = Color3.fromRGB(28,25,42)
+Top.BorderSizePixel = 0
+Top.Parent = Main
+
+Instance.new("UICorner",Top).CornerRadius = UDim.new(0,12)
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1,-55,1,0)
+Title.Position = UDim2.fromOffset(12,0)
+Title.BackgroundTransparency = 1
+Title.Text = "DELTA  |  TELEPORT"
+Title.TextColor3 = Color3.new(1,1,1)
+Title.TextSize = 17
+Title.Font = Enum.Font.GothamBold
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = Top
+
+-- CLOSE BUTTON
+local Close = Instance.new("TextButton")
+Close.Size = UDim2.fromOffset(32,32)
+Close.Position = UDim2.new(1,-38,0,6)
+Close.BackgroundColor3 = Color3.fromRGB(180,55,65)
+Close.Text = "X"
+Close.TextColor3 = Color3.new(1,1,1)
+Close.TextSize = 15
+Close.Font = Enum.Font.GothamBold
+Close.Parent = Top
+
+Instance.new("UICorner",Close).CornerRadius = UDim.new(0,8)
+
+Close.MouseButton1Click:Connect(function()
+    Gui:Destroy()
+end)
+
+-- SEARCH BOX
+local Search = Instance.new("TextBox")
+Search.Size = UDim2.new(1,-20,0,36)
+Search.Position = UDim2.fromOffset(10,55)
+Search.BackgroundColor3 = Color3.fromRGB(35,35,48)
+Search.TextColor3 = Color3.new(1,1,1)
+Search.PlaceholderColor3 = Color3.fromRGB(150,150,160)
+Search.PlaceholderText = "Search locations..."
+Search.Text = ""
+Search.TextSize = 14
+Search.Font = Enum.Font.Gotham
+Search.ClearTextOnFocus = false
+Search.Parent = Main
+
+Instance.new("UICorner",Search).CornerRadius = UDim.new(0,8)
+
+-- LOCATION SCROLL
+local Scroll = Instance.new("ScrollingFrame")
+Scroll.Size = UDim2.new(1,-20,1,-105)
+Scroll.Position = UDim2.fromOffset(10,100)
+Scroll.BackgroundTransparency = 1
+Scroll.BorderSizePixel = 0
+Scroll.ScrollBarThickness = 4
+Scroll.ScrollBarImageColor3 = Color3.fromRGB(130,100,230)
+Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+Scroll.CanvasSize = UDim2.new(0,0,0,0)
+Scroll.Parent = Main
+
+local Layout = Instance.new("UIListLayout")
+Layout.Padding = UDim.new(0,7)
+Layout.SortOrder = Enum.SortOrder.LayoutOrder
+Layout.Parent = Scroll
+
+local Buttons = {}
+
+-- TELEPORT FUNCTION
+local function Teleport(CFramePosition)
+    local Character = Player.Character
+    local Root = Character and Character:FindFirstChild("HumanoidRootPart")
+
+    if Root then
+        Root.CFrame = CFramePosition
+    end
+end
+
+-- CREATE BUTTONS
+local Names = {}
+
+for Name in pairs(Locations) do
+    table.insert(Names,Name)
+end
+
+table.sort(Names)
+
+for Index,Name in ipairs(Names) do
+    local Button = Instance.new("TextButton")
+    Button.Name = Name
+    Button.Size = UDim2.new(1,-5,0,38)
+    Button.BackgroundColor3 = Color3.fromRGB(75,55,145)
+    Button.Text = "  " .. Name
+    Button.TextColor3 = Color3.new(1,1,1)
+    Button.TextSize = 14
+    Button.Font = Enum.Font.GothamSemibold
+    Button.TextXAlignment = Enum.TextXAlignment.Left
+    Button.LayoutOrder = Index
+    Button.Parent = Scroll
+
+    Instance.new("UICorner",Button).CornerRadius = UDim.new(0,7)
+
+    Button.MouseButton1Click:Connect(function()
+        Teleport(Locations[Name])
+    end)
+
+    Button.MouseEnter:Connect(function()
+        Button.BackgroundColor3 = Color3.fromRGB(105,75,195)
+    end)
+
+    Button.MouseLeave:Connect(function()
+        Button.BackgroundColor3 = Color3.fromRGB(75,55,145)
+    end)
+
+    table.insert(Buttons,Button)
+end
+
+-- SEARCH FILTER
+Search:GetPropertyChangedSignal("Text"):Connect(function()
+    local Query = string.lower(Search.Text)
+
+    for _,Button in ipairs(Buttons) do
+        Button.Visible = string.find(
+            string.lower(Button.Name),
+            Query,
+            1,
+            true
+        ) ~= nil
+    end
+end)
+
+-- DRAG WINDOW
+local Dragging = false
+local DragStart
+local StartPosition
+
+Top.InputBegan:Connect(function(Input)
+    if Input.UserInputType == Enum.UserInputType.MouseButton1 then
+        Dragging = true
+        DragStart = Input.Position
+        StartPosition = Main.Position
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(Input)
+    if Dragging and Input.UserInputType == Enum.UserInputType.MouseMovement then
+        local Delta = Input.Position - DragStart
+
+        Main.Position = UDim2.new(
+            StartPosition.X.Scale,
+            StartPosition.X.Offset + Delta.X,
+            StartPosition.Y.Scale,
+            StartPosition.Y.Offset + Delta.Y
+        )
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(Input)
+    if Input.UserInputType == Enum.UserInputType.MouseButton1 then
+        Dragging = false
+    end
+end)
+
+print("Delta Teleport Hub loaded! 30 locations.")
